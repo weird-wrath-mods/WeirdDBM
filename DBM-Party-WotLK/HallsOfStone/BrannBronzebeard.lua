@@ -17,6 +17,14 @@ mod:RegisterEventsInCombat(
 
 local warningPhase	= mod:NewAnnounce("WarningPhase", 2, "Interface\\Icons\\Spell_Nature_WispSplode")
 local timerEvent	= mod:NewTimer(302, "timerEvent", "Interface\\Icons\\Spell_Holy_BorrowedTime", nil, nil, 6)
+local timerWave		= mod:NewTimer(44, "TimerWave", 694, nil, nil, 1)
+
+local function NextWave(self)
+	local cd = self:IsHeroic() and 23.5 or 32.5
+	if timerEvent:GetRemaining() < cd + 1 then return end
+	timerWave:Start(cd)
+	self:Schedule(cd, NextWave, self)
+end
 
 function mod:WatchdogWipe()
 	DBM:EndCombat(self, true)
@@ -24,7 +32,14 @@ end
 
 function mod:OnCombatStart(delay)
 	timerEvent:Start(-delay)
+	timerWave:Start(44 - delay)
+	self:Schedule(44 - delay, NextWave, self)
 	self:Schedule(35, self.WatchdogWipe, self, "BrannWatchdog")
+end
+
+function mod:OnCombatEnd()
+	self:Unschedule(NextWave)
+	timerWave:Stop()
 end
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
