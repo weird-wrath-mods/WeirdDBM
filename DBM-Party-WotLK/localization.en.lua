@@ -383,12 +383,14 @@ L:SetWarningLocalization({
 })
 
 L:SetTimerLocalization({
-	timerEvent	= "Time remaining"
+	timerEvent	= "Time remaining",
+	TimerWave	= "Next wave"
 })
 
 L:SetOptionLocalization({
 	WarningPhase	= "Show warning for phase change",
-	timerEvent		= "Show timer for event duration"
+	timerEvent		= "Show timer for event duration",
+	TimerWave		= "Show timer for next wave spawn"
 })
 
 L:SetMiscLocalization({
