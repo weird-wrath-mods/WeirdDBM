@@ -455,7 +455,7 @@ local newerVersionPerson, cSyncSender, iconSetRevision, iconSetPerson, loadcIds,
 -- False variables
 local voiceSessionDisabled, targetEventsRegistered, combatInitialized, healthCombatInitialized, watchFrameRestore, bossuIdFound, timerRequestInProgress, encounterInProgress = false, false, false, false, false, false, false, false
 -- Nil variables
-local currentModProfileScope, currentModProfileName, currentSpecID, currentSpecName, currentSpecGroup, pformat, loadOptions, checkWipe, checkBossHealth, checkCustomBossHealth, fireEvent, LastInstanceType, breakTimerStart, AddMsg, delayedFunction, handleSync, savedDifficulty, difficultyText, difficultyIndex, encounterDifficulty, encounterDifficultyText, encounterDifficultyIndex, lastGroupLeader
+local currentModProfileScope, currentModProfileName, currentSpecID, currentSpecName, currentSpecGroup, pformat, loadOptions, checkWipe, checkBossHealth, checkCustomBossHealth, fireEvent, LastInstanceType, breakTimerStart, pullTimerStart, AddMsg, delayedFunction, handleSync, savedDifficulty, difficultyText, difficultyIndex, encounterDifficulty, encounterDifficultyText, encounterDifficultyIndex, lastGroupLeader
 -- 0 variables
 local dbmToc, cSyncReceived, showConstantReminder, updateNotificationDisplayed, LastGroupSize = 0, 0, 0, 0
 local LastInstanceMapID = -1
@@ -1298,6 +1298,17 @@ do
 				self.Options.RestoreSettingBreakTimer = nil
 			end
 		end
+		--Pull timer recovery from local settings (solo reload, no group to sync from)
+		if self.Options.RestoreSettingPullTimer then
+			local timer, startTime = string.split("/", self.Options.RestoreSettingPullTimer)
+			local elapsed = time() - tonumber(startTime)
+			local remaining = timer - elapsed
+			if remaining > 0 then
+				pullTimerStart(remaining, playerName)
+			else--It must have ended while we were reloading, kill variable.
+				self.Options.RestoreSettingPullTimer = nil
+			end
+		end
 		sendGuildSync("DBMv4-GH", "Hi!")
 		if not savedDifficulty or not difficultyText or not difficultyIndex then--prevent error if savedDifficulty or difficultyText is nil
 			savedDifficulty, difficultyText, difficultyIndex, LastGroupSize = self:GetCurrentInstanceDifficulty()
@@ -1924,7 +1935,11 @@ do
 				if dbmIsEnabled then
 					SendAddonMessage("BWVQ3", bwVersionQueryString:format(0), "RAID")
 				end
-				self:Schedule(2, DBM.RequestTimers, DBM)
+				--Recover active timers (incl. pull/break) on join-by-invite, where PLAYER_ENTERING_WORLD doesn't fire. requestNum is required or RequestTimers selects nobody.
+				self:Unschedule(self.RequestTimers)
+				self:Schedule(2, self.RequestTimers, self, 1)
+				self:Schedule(5, self.RequestTimers, self, 2)
+				self:Schedule(8, self.RequestTimers, self, 3)
 				fireEvent("raidJoin", playerName) -- backwards compatibility
 				fireEvent("DBM_raidJoin", playerName)
 				local bigWigs = _G["BigWigs"]
@@ -1998,6 +2013,11 @@ do
 				if dbmIsEnabled then
 					SendAddonMessage("BWVQ3", bwVersionQueryString:format(0), "PARTY")
 				end
+				--Recover active timers (incl. pull/break) on party join; the party branch never requested timers before.
+				self:Unschedule(self.RequestTimers)
+				self:Schedule(2, self.RequestTimers, self, 1)
+				self:Schedule(5, self.RequestTimers, self, 2)
+				self:Schedule(8, self.RequestTimers, self, 3)
 				fireEvent("partyJoin", playerName) -- backwards compatibility
 				fireEvent("DBM_partyJoin", playerName)
 			end
@@ -3602,21 +3622,7 @@ do
 	end
 
 	local dummyMod -- dummy mod for the pull timer
-	syncHandlers["DBMv4-PT"] = function(sender, timer, senderMapID, target)
-		if DBM.Options.DontShowUserTimers then return end
-		local isTank = UnitGroupRolesAssigned(sender)
-		local LFGTankException = IsPartyLFG() and isTank
-		if (DBM:GetRaidRank(sender) == 0 and IsInGroup() and not LFGTankException) or select(2, IsInInstance()) == "pvp" then
-			return
-		end
-		--Abort if mapID filter is enabled and sender actually sent a mapID. if no mapID is sent, it's always passed through (IE BW pull timers)
-		if DBM.Options.DontShowPTNoID and senderMapID and tonumber(senderMapID) ~= LastInstanceMapID then return end
-		timer = tonumber(timer or 0)
-		--We want to permit 0 itself, but block anything negative number or anything between 0 and 3
-		if (timer > 0 and timer < 3) or timer < 0 then
-			return
-		end
-		if timer == 0 or DBM:AntiSpam(1, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time
+	function pullTimerStart(timer, sender, target)
 			if not dummyMod then
 				local threshold = DBM.Options.PTCountThreshold2
 				threshold = floor(threshold)
@@ -3643,7 +3649,9 @@ do
 				end
 			end
 			dummyMod.text:Cancel()
+			DBM.Options.RestoreSettingPullTimer = nil
 			if timer == 0 then return end--"/dbm pull 0" will strictly be used to cancel the pull timer (which is why we let above part of code run but not below)
+			DBM.Options.RestoreSettingPullTimer = timer.."/"..time()
 			DBM:FlashClientIcon()
 			if not DBM.Options.DontShowPT2 then
 				dummyMod.timer:Start(timer, L.TIMER_PULL)
@@ -3694,7 +3702,38 @@ do
 					dummyMod.geartext:Show(L.GEAR_WARNING_WEAPON)
 				end
 			end
+			AceTimer:ScheduleTimer(function() DBM.Options.RestoreSettingPullTimer = nil end, timer)
+	end
+
+	syncHandlers["DBMv4-PT"] = function(sender, timer, senderMapID, target)
+		if DBM.Options.DontShowUserTimers then return end
+		local isTank = UnitGroupRolesAssigned(sender)
+		local LFGTankException = IsPartyLFG() and isTank
+		if (DBM:GetRaidRank(sender) == 0 and IsInGroup() and not LFGTankException) or select(2, IsInInstance()) == "pvp" then
+			return
 		end
+		--Abort if mapID filter is enabled and sender actually sent a mapID. if no mapID is sent, it's always passed through (IE BW pull timers)
+		if DBM.Options.DontShowPTNoID and senderMapID and tonumber(senderMapID) ~= LastInstanceMapID then return end
+		timer = tonumber(timer or 0)
+		--We want to permit 0 itself, but block anything negative number or anything between 0 and 3
+		if (timer > 0 and timer < 3) or timer < 0 then
+			return
+		end
+		if timer == 0 or DBM:AntiSpam(1, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time
+			pullTimerStart(timer, sender, target)
+		end
+	end
+
+	--Pull timer recovery for UI reload/late join. Mirrors DBMv4-BTR3 break recovery: sent as a whisper from a group member in response to RequestTimers, so sender rank is not re-checked here.
+	whisperSyncHandlers["DBMv4-PTR"] = function(sender, timer)
+		if DBM.Options.DontShowUserTimers then return end
+		timer = tonumber(timer or 0)
+		if timer <= 0 then return end
+		DBM:Unschedule(DBM.RequestTimers)--IF we got PTR sync, then we know immediately RequestTimers was successful, so abort others
+		if #inCombat >= 1 then return end
+		if DBT:GetBar("%s\t"..L.TIMER_PULL) or DBT:GetBar(L.TIMER_PULL) then return end--Already recovered. Prevent duplicate recovery
+		DBM:Debug("PTR calling pullTimerStart from "..sender.." with remaining "..timer, 3)
+		pullTimerStart(timer, sender)
 	end
 
 	do
@@ -6227,6 +6266,18 @@ do
 				self:Debug("Sending Break timer to "..target, 2)
 				SendAddonMessage("DBMv4-BTR3", remaining, "WHISPER", target)
 				SendAddonMessage("DBMv4-Pizza", ("%s\t%s\t%s"):format(remaining, L.TIMER_BREAK, tostring(true))) -- Backwards compatibility so old DBMs can receive break timers from this DBM
+				return
+			end
+			--No break running, recover an in-progress pull timer instead (for UI reload/late join)
+			--Pull bar id is "%s\t"..L.TIMER_PULL because the dummy timer's name is "%s" and it's started with L.TIMER_PULL as an arg
+			local pullBar = DBT:GetBar("%s\t"..L.TIMER_PULL) or DBT:GetBar(L.TIMER_PULL)
+			if pullBar then
+				local remaining = pullBar.timer
+				if remaining and remaining > 0 then
+					self:Debug("Sending Pull timer to "..target, 2)
+					SendAddonMessage("DBMv4-PTR", remaining, "WHISPER", target)
+					SendAddonMessage("DBMv4-Pizza", ("%s\t%s\t%s"):format(remaining, L.TIMER_PULL, tostring(true))) -- Backwards compatibility so old DBMs can receive pull timers from this DBM
+				end
 			end
 			return
 		end
