@@ -39,21 +39,23 @@ local function Pull(timer)
 	-- Old chat message (requested)
 	if IsInGroup() then
 		local channel = ((GetNumRaidMembers() == 0) and "PARTY") or "RAID_WARNING"
-		DBM:Unschedule(SendChatMessage)
-		-- Pull announcer
-		local savedDifficulty = DBM:GetCurrentInstanceDifficulty()
-		if savedDifficulty:find("heroic") then
-			SendChatMessage("{rt8} "..L.ANNOUNCE_PULL_MODE:format(PLAYER_DIFFICULTY2).." {rt8}", channel)
-		elseif savedDifficulty:find("normal") then
-			SendChatMessage(L.ANNOUNCE_PULL_MODE:format(PLAYER_DIFFICULTY1), channel)
+		DBM:Unschedule(SendChatMessage)--Clear any pending countdown announcements (also handles a timer==0 cancel)
+		if timer > 0 then
+			-- Pull announcer
+			local savedDifficulty = DBM:GetCurrentInstanceDifficulty()
+			if savedDifficulty:find("heroic") then
+				SendChatMessage("{rt8} "..L.ANNOUNCE_PULL_MODE:format(PLAYER_DIFFICULTY2).." {rt8}", channel)
+			elseif savedDifficulty:find("normal") then
+				SendChatMessage(L.ANNOUNCE_PULL_MODE:format(PLAYER_DIFFICULTY1), channel)
+			end
+			SendChatMessage(L.ANNOUNCE_PULL:format(timer, playerName), channel)
+			if timer > 7 then DBM:Schedule(timer - 7, SendChatMessage, L.ANNOUNCE_PULL:format(7, playerName), channel) end
+			if timer > 5 then DBM:Schedule(timer - 5, SendChatMessage, L.ANNOUNCE_PULL:format(5, playerName), channel) end
+			if timer > 3 then DBM:Schedule(timer - 3, SendChatMessage, L.ANNOUNCE_PULL:format(3, playerName), channel) end
+			if timer > 2 then DBM:Schedule(timer - 2, SendChatMessage, L.ANNOUNCE_PULL:format(2, playerName), channel) end
+			if timer > 1 then DBM:Schedule(timer - 1, SendChatMessage, L.ANNOUNCE_PULL:format(1, playerName), channel) end
+			DBM:Schedule(timer, SendChatMessage, L.ANNOUNCE_PULL_NOW, channel)
 		end
-		SendChatMessage(L.ANNOUNCE_PULL:format(timer, playerName), channel)
-		if timer > 7 then DBM:Schedule(timer - 7, SendChatMessage, L.ANNOUNCE_PULL:format(7, playerName), channel) end
-		if timer > 5 then DBM:Schedule(timer - 5, SendChatMessage, L.ANNOUNCE_PULL:format(5, playerName), channel) end
-		if timer > 3 then DBM:Schedule(timer - 3, SendChatMessage, L.ANNOUNCE_PULL:format(3, playerName), channel) end
-		if timer > 2 then DBM:Schedule(timer - 2, SendChatMessage, L.ANNOUNCE_PULL:format(2, playerName), channel) end
-		if timer > 1 then DBM:Schedule(timer - 1, SendChatMessage, L.ANNOUNCE_PULL:format(1, playerName), channel) end
-		DBM:Schedule(timer, SendChatMessage, L.ANNOUNCE_PULL_NOW, channel)
 	end
 end
 
@@ -186,7 +188,12 @@ if not _G["BigWigs"] then
 	--This shouldn't raise an issue since BW SHOULD load before DBM in any case they are both present.
 	SLASH_DEADLYBOSSMODSPULL1 = "/pull"
 	SlashCmdList["DEADLYBOSSMODSPULL"] = function(msg)
-		Pull(tonumber(msg) or 10)
+		local timer = tonumber(msg)
+		if not timer then--Bare /pull cancels a running timer (Pull(0)), else starts the default 10s
+			local pullBar = DBT:GetBar("%s\t"..L.TIMER_PULL) or DBT:GetBar(L.TIMER_PULL)
+			timer = (pullBar and pullBar.timer and pullBar.timer > 0) and 0 or 10
+		end
+		Pull(timer)
 	end
 	SLASH_DEADLYBOSSMODSBREAK1 = "/break"
 	SlashCmdList["DEADLYBOSSMODSBREAK"] = function(msg)
