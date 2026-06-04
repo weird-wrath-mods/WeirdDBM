@@ -226,7 +226,7 @@ function mod:SPELL_CAST_START(args)
 		startBreathFire()
 		timerBreathCD:Start()
 	elseif spellId == 57407 or spellId == 60936 then	-- P3 Surge of Power (channeled, so it logs cast-start)
-		--timerSurgeCD:Start()	-- temporarily disabled: using the personal SURGE INCOMING bar only
+		timerSurgeCD:Start()
 	end
 end
 
@@ -283,13 +283,38 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg)
 	end
 end
 
+-- Spoken "3, 2, 1" audio countdown over the 3s from the whisper to the beam landing, using the player's DBM
+-- CountdownVoice pack (PlayCountSound -> <voice>/N.ogg). A voice cuts through combat noise better than text.
+local function startSurgeCountdown()
+	DBM:PlayCountSound(3)
+	mod:Schedule(1, function() DBM:PlayCountSound(2) end)
+	mod:Schedule(2, function() DBM:PlayCountSound(1) end)
+end
+
 -- The surge target-warning arrives as a target-only RAID_BOSS_WHISPER 3s before the cast lands on you. The
 -- server sends the raw creature_text ("%s fixes his eyes on you!"); the client only fills the %s for display,
 -- so the addon gets the literal string, identical to L.EmoteSurge -> a direct equality is the exact match.
 function mod:CHAT_MSG_RAID_BOSS_WHISPER(msg)
 	if msg == L.EmoteSurge then
-		timerSurgeYou:Start()
+		--timerSurgeYou:Start()	-- 3s personal bar off; the Surge in 3/2/1 countdown + recurring CD bar cover it now
+		startSurgeCountdown()
 	end
+end
+
+-- Side-by-side size/color check, no pull needed:  /run DBM:GetModByName("Malygos"):TestBars()
+-- Runs both at their real durations (surge 3s, next phase 23s), so the 3s surge bar overlaps the start of the
+-- phase bar long enough to compare size and color.
+function mod:TestBars()
+	timerSurgeYou:Start()
+	timerIntermission:Start()
+	local pbar = DBT:GetBar(timerIntermission.id)
+	if pbar then pbar:ResetAnimations(true) DBT:UpdateBars() end	-- force the phase bar onto the huge anchor, same as the real pull
+end
+
+-- Preview the surge countdown (and bar) without a pull:  /run DBM:GetModByName("Malygos"):TestCountdown()
+function mod:TestCountdown()
+	timerSurgeYou:Start()
+	startSurgeCountdown()
 end
 
 -- Detect the local player's own Focusing Iris cast and broadcast it (any rank).
@@ -372,6 +397,6 @@ function mod:OnSync(event, arg, arg2, arg3)
 		-- yell is +3s after the descent MovePoint; boss drops 75yd to the fight position at 20yd/s run = 3.75s
 		-- (arrives yell+0.75s), arrival -> EVENT_START_PHASE_3 +6s -> first surge event +4-7s -> real channeled
 		-- cast +3s selector delay. So yell -> first SPELL_CAST_START = 13.75-16.75s; self-corrects to 7s after.
-		--timerSurgeCD:Start("v13.75-16.75")	-- temporarily disabled: using the personal SURGE INCOMING bar only
+		timerSurgeCD:Start("v13.75-16.75")
 	end
 end
