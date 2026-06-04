@@ -301,22 +301,6 @@ function mod:CHAT_MSG_RAID_BOSS_WHISPER(msg)
 	end
 end
 
--- Side-by-side size/color check, no pull needed:  /run DBM:GetModByName("Malygos"):TestBars()
--- Runs both at their real durations (surge 3s, next phase 23s), so the 3s surge bar overlaps the start of the
--- phase bar long enough to compare size and color.
-function mod:TestBars()
-	timerSurgeYou:Start()
-	timerIntermission:Start()
-	local pbar = DBT:GetBar(timerIntermission.id)
-	if pbar then pbar:ResetAnimations(true) DBT:UpdateBars() end	-- force the phase bar onto the huge anchor, same as the real pull
-end
-
--- Preview the surge countdown (and bar) without a pull:  /run DBM:GetModByName("Malygos"):TestCountdown()
-function mod:TestCountdown()
-	timerSurgeYou:Start()
-	startSurgeCountdown()
-end
-
 -- Detect the local player's own Focusing Iris cast and broadcast it (any rank).
 function mod:UNIT_SPELLCAST_START(uId)
 	if uId ~= "player" then return end
