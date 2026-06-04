@@ -9,7 +9,10 @@ mod:RegisterCombat("yell", L.YellPull)
 mod:SetWipeTime(45)
 
 mod:RegisterEvents(
-	"CHAT_MSG_MONSTER_YELL"
+	"CHAT_MSG_MONSTER_YELL",
+	"UNIT_SPELLCAST_START",
+	"UNIT_SPELLCAST_STOP",
+	"UNIT_SPELLCAST_INTERRUPTED"
 )
 
 mod:RegisterEventsInCombat(
@@ -62,6 +65,42 @@ local tableBuild = false
 local guids = {}
 local startedPhase1 = false
 
+-- Focusing Iris pull timer (rank-agnostic, synced).
+-- The key cast happens pre-combat, so each player detects their OWN cast and broadcasts it;
+-- every client renders DBM's pull timer locally from that synced state (DBM:StartPullTimer with
+-- noSync) -- the rank-gated network PT path is never touched, so it can't be abused elsewhere.
+local irisNormalName	= GetSpellInfo(61003)	-- "Key to the Focusing Iris"
+local irisHeroicName	= GetSpellInfo(61004)	-- "Heroic Key to the Focusing Iris"
+local irisCasters		= {}					-- [casterName] = { endTime = GetTime-based, seq = n }
+local irisPrimary, irisPrimaryEnd
+local myIrisCasting		= false
+local myIrisEnd			= 0
+local myIrisSeq			= 0						-- bumps each cast so cancels never collide with the 8s sync throttle
+local mhuge, mabs		= math.huge, math.abs
+
+local function irisRecompute()
+	local primary, endTime = nil, mhuge
+	for caster, c in pairs(irisCasters) do
+		if c.endTime < endTime then endTime, primary = c.endTime, caster end
+	end
+	-- "First caster wins": a later caster's endTime is larger, so it never overtakes the first
+	-- while the first is live. Only (re)set the bar when the primary changes, or the same primary
+	-- re-casts (endTime shifts) -- additional casters don't disturb the running timer.
+	if primary ~= irisPrimary or (primary and irisPrimaryEnd and mabs(endTime - irisPrimaryEnd) > 0.3) then
+		irisPrimary, irisPrimaryEnd = primary, endTime
+		if primary then
+			local remaining = endTime - GetTime()
+			DBM:Debug(("Iris: pull primary = %s, %.2fs left"):format(primary, remaining), 2)
+			if remaining > 0.5 then
+				DBM:StartPullTimer(remaining, primary, true)	-- start/reset, local-only render
+			end
+		else
+			DBM:Debug("Iris: no casters left, cancelling pull", 2)
+			DBM:StartPullTimer(0)								-- last caster cancelled -> cancel the pull
+		end
+	end
+end
+
 local function buildGuidTable()
 	table.wipe(guids)
 	for uId in DBM:GetGroupMembers() do
@@ -98,6 +137,10 @@ function mod:OnCombatStart(delay)
 	timerAchieve:Start(-delay)
 	startedPhase1 = false
 	table.wipe(guids)
+	-- Iris pull is resolved once we're in combat; clear tracking for any future re-pull
+	table.wipe(irisCasters)
+	irisPrimary, irisPrimaryEnd = nil, nil
+	myIrisCasting = false
 	self:RegisterShortTermEvents(
 		"SWING_DAMAGE",
 		"SWING_MISSED"
@@ -228,7 +271,52 @@ function mod:UNIT_SPELLCAST_SUCCEEDED(_, spellName)
 	end
 end]]
 
-function mod:OnSync(event, arg)
+-- Detect the local player's own Focusing Iris cast and broadcast it (any rank).
+function mod:UNIT_SPELLCAST_START(uId)
+	if uId ~= "player" then return end
+	local name, _, _, _, _, endMs = UnitCastingInfo("player")
+	if name and (name == irisNormalName or name == irisHeroicName) then
+		myIrisSeq = myIrisSeq + 1
+		myIrisCasting = true
+		myIrisEnd = endMs / 1000
+		DBM:Debug(("Iris: own cast detected, %.2fs remaining (seq %d)"):format(myIrisEnd - GetTime(), myIrisSeq), 2)
+		self:SendSync("IrisStart", ("%.2f"):format(myIrisEnd - GetTime()), UnitName("player"), myIrisSeq)
+	end
+end
+
+function mod:UNIT_SPELLCAST_STOP(uId)
+	if uId ~= "player" or not myIrisCasting then return end
+	myIrisCasting = false
+	if GetTime() >= myIrisEnd - 0.25 then	-- reached the end -> it went off, fight is starting
+		self:SendSync("IrisDone", UnitName("player"))
+	else									-- stopped early -> cancelled/interrupted
+		self:SendSync("IrisStop", UnitName("player"), myIrisSeq)
+	end
+end
+mod.UNIT_SPELLCAST_INTERRUPTED = mod.UNIT_SPELLCAST_STOP
+
+function mod:OnSync(event, arg, arg2, arg3)
+	-- Focusing Iris syncs arrive pre-combat, so handle them before the in-combat guard below.
+	if event == "IrisStart" then
+		local remaining, caster, seq = tonumber(arg), arg2, tonumber(arg3)
+		if caster and remaining and remaining > 0 then
+			irisCasters[caster] = { endTime = GetTime() + remaining, seq = seq or 0 }
+			irisRecompute()
+		end
+		return
+	elseif event == "IrisStop" then
+		local caster, seq = arg, tonumber(arg2)
+		local c = caster and irisCasters[caster]
+		if c and (not seq or c.seq == seq) then	-- ignore a stale stop for a newer cast
+			irisCasters[caster] = nil
+			irisRecompute()
+		end
+		return
+	elseif event == "IrisDone" then				-- a cast completed; clear tracking, let the bar ring out
+		table.wipe(irisCasters)
+		irisPrimary, irisPrimaryEnd = nil, nil
+		return
+	end
 	if not self:IsInCombat() then return end
 	if event == "Phase2" then
 		self:SetStage(2)

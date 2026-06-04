@@ -3622,7 +3622,7 @@ do
 	end
 
 	local dummyMod -- dummy mod for the pull timer
-	function pullTimerStart(timer, sender, target)
+	function pullTimerStart(timer, sender, target, noSync)
 			if not dummyMod then
 				local threshold = DBM.Options.PTCountThreshold2
 				threshold = floor(threshold)
@@ -3655,7 +3655,9 @@ do
 			DBM:FlashClientIcon()
 			if not DBM.Options.DontShowPT2 then
 				dummyMod.timer:Start(timer, L.TIMER_PULL)
-				sendSync("DBMv4-Pizza", ("%s\t%s\t%s"):format(timer, L.TIMER_PULL, tostring(true))) -- Backwards compatibility so old DBMs can receive pull timers from this DBM
+				if not noSync then
+					sendSync("DBMv4-Pizza", ("%s\t%s\t%s"):format(timer, L.TIMER_PULL, tostring(true))) -- Backwards compatibility so old DBMs can receive pull timers from this DBM
+				end
 			end
 			if not DBM.Options.DontShowPTCountdownText and TT then
 				if not timerTrackerRunning then--if a TimerTracker event is running not started by DBM, block creating one of our own (object gets buggy if it has 2+ events running)
@@ -3703,6 +3705,13 @@ do
 				end
 			end
 			AceTimer:ScheduleTimer(function() DBM.Options.RestoreSettingPullTimer = nil end, timer)
+	end
+
+	-- Local pull-timer start/cancel with no Pizza rebroadcast. For mods that drive the
+	-- pull timer per-client from their own synced state (e.g. Malygos Focusing Iris), so
+	-- the rank-gated network PT path is never involved. Pass timer 0 to cancel.
+	function DBM:StartPullTimer(timer, sender, noSync)
+		return pullTimerStart(timer, sender, nil, noSync)
 	end
 
 	syncHandlers["DBMv4-PT"] = function(sender, timer, senderMapID, target)
