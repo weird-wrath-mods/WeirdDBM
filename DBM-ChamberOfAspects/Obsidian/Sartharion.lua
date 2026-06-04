@@ -45,6 +45,18 @@ local drakeBreathIcon = {
 	[L.NameShadron]		= 58105,	-- Power of Shadron
 	[L.NameVesperon]	= 61251,	-- Power of Vesperon
 }
+
+-- Start a drake's Shadow Breath bar with its own icon, forced onto the huge bar
+-- regardless of the 17.5s length (which is past the default enlarge threshold).
+local function showDrakeBreath(name, seedTime)
+	timerDrakeBreath:Start(seedTime, name)
+	timerDrakeBreath:UpdateIcon(drakeBreathIcon[name], name)
+	local bar = DBT:GetBar(timerDrakeBreath.id .. "\t" .. name)
+	if bar then
+		bar:ResetAnimations(true)
+		DBT:UpdateBars()
+	end
+end
 local timerWall					= mod:NewNextTimer(25, 43113, nil, nil, nil, 2)
 
 local yellFissure           = mod:NewYellMe(59127)
@@ -181,8 +193,7 @@ function mod:SPELL_CAST_SUCCESS(args)
         warnShadowFissure:Play("watchstep")
         timerShadowFissure:Start()
     elseif args:IsSpellID(57570, 59126) then -- Shadow Breath (Tenebron/Shadron/Vesperon)
-        timerDrakeBreath:Start(nil, args.sourceName)
-        timerDrakeBreath:UpdateIcon(drakeBreathIcon[args.sourceName], args.sourceName)
+        showDrakeBreath(args.sourceName)
     end
 end
 
@@ -212,8 +223,7 @@ function mod:CHAT_MSG_MONSTER_YELL(msg, mob)
     if (mob == L.NameTenebron and L.YellTenebronAggro and msg:find(L.YellTenebronAggro, 1, true))
     or (mob == L.NameShadron and L.YellShadronAggro and msg:find(L.YellShadronAggro, 1, true))
     or (mob == L.NameVesperon and L.YellVesperonAggro and msg:find(L.YellVesperonAggro, 1, true)) then
-        timerDrakeBreath:Start(10, mob)
-        timerDrakeBreath:UpdateIcon(drakeBreathIcon[mob], mob)
+        showDrakeBreath(mob, 10)
         return
     end
     if mob == L.NameTenebron and L.YellTenebronLand and msg:find(L.YellTenebronLand, 1, true) then
