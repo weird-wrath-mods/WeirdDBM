@@ -226,7 +226,7 @@ function mod:SPELL_CAST_START(args)
 		startBreathFire()
 		timerBreathCD:Start()
 	elseif spellId == 57407 or spellId == 60936 then	-- P3 Surge of Power (channeled, so it logs cast-start)
-		timerSurgeCD:Start()
+		--timerSurgeCD:Start()	-- temporarily disabled: using the personal SURGE INCOMING bar only
 	end
 end
 
@@ -295,13 +295,18 @@ end
 -- Detect the local player's own Focusing Iris cast and broadcast it (any rank).
 function mod:UNIT_SPELLCAST_START(uId)
 	if uId ~= "player" then return end
-	local name, _, _, _, _, endMs = UnitCastingInfo("player")
+	local name, _, _, _, startMs, endMs = UnitCastingInfo("player")
 	if name and (name == irisNormalName or name == irisHeroicName) then
 		myIrisSeq = myIrisSeq + 1
 		myIrisCasting = true
 		myIrisEnd = endMs / 1000
-		DBM:Debug(("Iris: own cast detected, %.2fs remaining (seq %d)"):format(myIrisEnd - GetTime(), myIrisSeq), 2)
-		self:SendSync("IrisStart", ("%.2f"):format(myIrisEnd - GetTime()), UnitName("player"), myIrisSeq)
+		-- Broadcast the cast's full length (end - start), not (end - now). Each caster sends this once at their
+		-- own cast-start, and the relay timestamps it on receipt, so endTime = receiveTime + castLen lands on that
+		-- caster's true cast-end -> precedence across multiple casters is preserved. Using (end - now) instead
+		-- subtracts the ~0.1s we lose detecting UNIT_SPELLCAST_START after a /reload, which floored the bar to 4s.
+		local castLen = (endMs - startMs) / 1000
+		DBM:Debug(("Iris: own cast detected, %.2fs cast (seq %d)"):format(castLen, myIrisSeq), 2)
+		self:SendSync("IrisStart", ("%.2f"):format(castLen), UnitName("player"), myIrisSeq)
 	end
 end
 
@@ -367,6 +372,6 @@ function mod:OnSync(event, arg, arg2, arg3)
 		-- yell is +3s after the descent MovePoint; boss drops 75yd to the fight position at 20yd/s run = 3.75s
 		-- (arrives yell+0.75s), arrival -> EVENT_START_PHASE_3 +6s -> first surge event +4-7s -> real channeled
 		-- cast +3s selector delay. So yell -> first SPELL_CAST_START = 13.75-16.75s; self-corrects to 7s after.
-		timerSurgeCD:Start("v13.75-16.75")
+		--timerSurgeCD:Start("v13.75-16.75")	-- temporarily disabled: using the personal SURGE INCOMING bar only
 	end
 end
