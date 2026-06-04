@@ -54,13 +54,12 @@ local warnSurge					= mod:NewTargetAnnounce(60936, 3)
 --local warnStaticField			= mod:NewTargetNoFilterAnnounce(57430, 3)
 
 local specWarnSurge				= mod:NewSpecialWarningDefensive(60936, nil, nil, nil, 1, 2)
-local specWarnP3SurgeOfPowerSoon= mod:NewSpecialWarningYou(60936, nil, nil, nil, 1, 2)
 local specWarnStaticField		= mod:NewSpecialWarningYou(57430, nil, nil, nil, 1, 2)
 --local specWarnStaticFieldNear	= mod:NewSpecialWarningClose(57430, nil, nil, nil, 1, 2)
 local yellStaticField			= mod:NewYellMe(57430, nil, false)
 
 local timerSurgeCD				= mod:NewCDTimer(7, 60936, nil, nil, nil, 2)	-- P3 Surge of Power, recurs every 7s
-local timerSurgeYou				= mod:NewCastTimer(3, 60936, nil, nil, nil, 1)	-- personal: "fixes his eyes on you" whisper to beam impact is a fixed 3s (the script's selector delay)
+local timerSurgeYou				= mod:NewCastTimer(3, 60936, "SURGE INCOMING", nil, nil, 1)	-- personal: "fixes his eyes on you" whisper to beam impact is a fixed 3s (the script's selector delay)
 
 local tableBuild = false
 local guids = {}
@@ -290,8 +289,6 @@ end
 function mod:CHAT_MSG_RAID_BOSS_WHISPER(msg)
 	if msg == L.EmoteSurge then
 		timerSurgeYou:Start()
-		specWarnP3SurgeOfPowerSoon:Show()
-		specWarnP3SurgeOfPowerSoon:Play("findshield")
 	end
 end
 
