@@ -17,10 +17,9 @@ mod:RegisterEvents(
 
 mod:RegisterEventsInCombat(
 	"SPELL_AURA_APPLIED 60936 57407 56263 57429 57428 55853",
-	"SPELL_CAST_START 56505",
+	"SPELL_CAST_START 56505 57407 60936",
 	"SPELL_CAST_SUCCESS 56105 57430",
 	"CHAT_MSG_RAID_BOSS_EMOTE"
---	"UNIT_SPELLCAST_SUCCEEDED boss1"
 )
 -- General
 local enrageTimer				= mod:NewBerserkTimer(615)
@@ -44,7 +43,7 @@ local warnBreathInc				= mod:NewSoonAnnounce(56505, 3)
 local specWarnBreath			= mod:NewSpecialWarningSpell(56505, nil, nil, nil, 2, 2)
 
 local timerBreath				= mod:NewBuffActiveTimer(8, 56505, nil, nil, nil, 5) --lasts 5 seconds plus 3 sec cast.
-local timerBreathCD				= mod:NewCDTimer(69, 56505, nil, nil, nil, 2)	-- 65s schedule + ~4s travel to center, so the bar lands on the cast not ~4s early
+local timerBreathCD				= mod:NewCDTimer(71, 56505, nil, nil, nil, 2)	-- 65s schedule + ~4s travel to center + ~2secs of preamble, so the bar lands on the cast not ~6s early
 local timerIntermission			= mod:NewPhaseTimer(22)
 
 -- Stage Three
@@ -59,7 +58,7 @@ local specWarnStaticField		= mod:NewSpecialWarningYou(57430, nil, nil, nil, 1, 2
 --local specWarnStaticFieldNear	= mod:NewSpecialWarningClose(57430, nil, nil, nil, 1, 2)
 local yellStaticField			= mod:NewYellMe(57430, nil, false)
 
-local timerStaticFieldCD		= mod:NewCDTimer(12, 57430, nil, nil, nil, 3)
+local timerSurgeCD				= mod:NewCDTimer(7, 60936, nil, nil, nil, 2)	-- P3 Surge of Power, recurs every 7s
 
 local tableBuild = false
 local guids = {}
@@ -189,8 +188,7 @@ function mod:SPELL_AURA_APPLIED(args)
 				specWarnSurge:Play("defensive")
 			end
 		end
-	elseif args:IsSpellID(57429) then
-			timerStaticFieldCD:Start()
+	elseif args:IsSpellID(57429) then	-- in-field damage; personal warning only (not a cast-time signal)
 		local target = guids[args.destGUID]
 		if target == UnitName("player") then
 			specWarnStaticField:Show()
@@ -226,6 +224,8 @@ function mod:SPELL_CAST_START(args)
 		specWarnBreath:Play("findshield")
 		startBreathFire()
 		timerBreathCD:Start()
+	elseif spellId == 57407 or spellId == 60936 then	-- P3 Surge of Power (channeled, so it logs cast-start)
+		timerSurgeCD:Start()
 	end
 end
 
@@ -243,11 +243,6 @@ function mod:SPELL_CAST_SUCCESS(args)
 --		if timerSummonPowerSpark:GetTime() < 11 and timerSummonPowerSpark:IsStarted() then
 --			timerSummonPowerSpark:Update(18, 30)
 --		end
-	if spellId == 57430 then
-		self:ScheduleMethod(0.1, "StaticFieldTarget")
-		--warnStaticField:Show()
-		timerStaticFieldCD:Start()
-	end
 end
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
@@ -289,15 +284,6 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg)
 		self:SendSync("MalygosSurge", UnitName("player"))
 	end
 end
-
---[[localization free triggers that's better but can only be used where boss1 UnitId available
-function mod:UNIT_SPELLCAST_SUCCEEDED(_, spellName)
---	"<39.8> [UNIT_SPELLCAST_SUCCEEDED] Malygos:Possible Target<Omegal>:target:Summon Power Spark::0:56140", -- [998]
-	if spellName == GetSpellInfo(56140) then
-		warnSummonPowerSpark:Show()
-		timerSummonPowerSpark:Start()
-	end
-end]]
 
 -- Detect the local player's own Focusing Iris cast and broadcast it (any rank).
 function mod:UNIT_SPELLCAST_START(uId)
@@ -361,7 +347,7 @@ function mod:OnSync(event, arg, arg2, arg3)
 			stageBar:ResetAnimations(true)
 			DBT:UpdateBars()
 		end
-		timerBreathCD:Start(83)	-- 79 + ~4s travel to center, matching the recurrent bar
+		timerBreathCD:Start(85)	-- 79 + ~4s travel to center + ~2secs of preamble, matching the recurrent bar
 	elseif event == "BreathSoon" then
 		warnBreathInc:Show()
 	elseif event == "Phase3" then
@@ -370,7 +356,7 @@ function mod:OnSync(event, arg, arg2, arg3)
 		self:Schedule(6, buildGuidTable)
 		timerBreathCD:Cancel()
 		self:Unschedule(breathFireRed)
---		timerStaticFieldCD:Start(20.2) -- REVIEW! ~4s variance? (10man Lordaeron 2022/09/27 || 25man Lordaeron 2022/09/27) - Stage 3/24.5 || Stage 3/20.2
+		timerSurgeCD:Start("v4-7")			-- first Surge of Power ~4-7s into P3, then anchored on its cast-start
 	elseif event == "MalygosSurge" then
 		warnSurge:CombinedShow(0.2, arg)
 		if arg == UnitName("player") then
