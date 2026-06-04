@@ -173,7 +173,7 @@ DBT.DefaultOptions = {
 	Texture = "Interface\\AddOns\\DBM-StatusBarTimers\\textures\\default.blp",
 	Font = "standardFont",
 	FontFlag = "None",
-	BarStyle = "NoAnim",
+	BarStyle = "DBM",
 	Skin = ""
 }
 
