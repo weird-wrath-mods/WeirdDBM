@@ -65,10 +65,22 @@ local tableBuild = false
 local guids = {}
 local startedPhase1 = false
 
--- Focusing Iris pull timer (rank-agnostic, synced).
--- The key cast happens pre-combat, so each player detects their OWN cast and broadcasts it;
--- every client renders DBM's pull timer locally from that synced state (DBM:StartPullTimer with
--- noSync) -- the rank-gated network PT path is never touched, so it can't be abused elsewhere.
+-- Focusing Iris pull timer (rank-agnostic trigger, official /pull propagation).
+-- The key cast happens pre-combat, so each player detects their OWN cast and broadcasts it (any
+-- rank). The GROUP LEADER's client tracks the casters, resolves precedence, and fires the real
+-- pull command (DBM:PullTimer -> Commands.lua Pull = exactly what /pull N and /pull 0 do). So the
+-- pull is fully legitimate/synced and self-cleans (bar, sync, chat countdown), while any key user
+-- can still trigger it.
+local function amIPullRelay()
+	-- Single deterministic relayer so we never emit duplicate pull timers.
+	if GetNumRaidMembers() > 0 then
+		return IsRaidLeader()
+	elseif GetNumPartyMembers() > 0 then
+		return IsPartyLeader()
+	end
+	return true	-- solo (testing)
+end
+
 local irisNormalName	= GetSpellInfo(61003)	-- "Key to the Focusing Iris"
 local irisHeroicName	= GetSpellInfo(61004)	-- "Heroic Key to the Focusing Iris"
 local irisCasters		= {}					-- [casterName] = { endTime = GetTime-based, seq = n }
@@ -91,12 +103,12 @@ local function irisRecompute()
 		if primary then
 			local remaining = endTime - GetTime()
 			DBM:Debug(("Iris: pull primary = %s, %.2fs left"):format(primary, remaining), 2)
-			if remaining > 0.5 then
-				DBM:StartPullTimer(remaining, primary, true)	-- start/reset, local-only render
+			if remaining > 0 then
+				DBM:PullTimer(remaining, true)			-- leader fires the real /pull (allowShort: sub-3s/decimal ok)
 			end
 		else
 			DBM:Debug("Iris: no casters left, cancelling pull", 2)
-			DBM:StartPullTimer(0)								-- last caster cancelled -> cancel the pull
+			DBM:PullTimer(0)							-- real /pull 0: cancels bar AND unschedules chat countdown
 		end
 	end
 end
@@ -296,25 +308,28 @@ end
 mod.UNIT_SPELLCAST_INTERRUPTED = mod.UNIT_SPELLCAST_STOP
 
 function mod:OnSync(event, arg, arg2, arg3)
-	-- Focusing Iris syncs arrive pre-combat, so handle them before the in-combat guard below.
-	if event == "IrisStart" then
-		local remaining, caster, seq = tonumber(arg), arg2, tonumber(arg3)
-		if caster and remaining and remaining > 0 then
-			irisCasters[caster] = { endTime = GetTime() + remaining, seq = seq or 0 }
-			irisRecompute()
+	-- Focusing Iris syncs arrive pre-combat. Only the group leader acts on them, relaying the
+	-- result as the official pull timer; everyone else just receives that pull timer normally.
+	if event == "IrisStart" or event == "IrisStop" or event == "IrisDone" then
+		if amIPullRelay() then
+			if event == "IrisStart" then
+				local remaining, caster, seq = tonumber(arg), arg2, tonumber(arg3)
+				if caster and remaining and remaining > 0 then
+					irisCasters[caster] = { endTime = GetTime() + remaining, seq = seq or 0 }
+					irisRecompute()
+				end
+			elseif event == "IrisStop" then
+				local caster, seq = arg, tonumber(arg2)
+				local c = caster and irisCasters[caster]
+				if c and (not seq or c.seq == seq) then	-- ignore a stale stop for a newer cast
+					irisCasters[caster] = nil
+					irisRecompute()
+				end
+			else										-- IrisDone: a cast completed, clear tracking
+				table.wipe(irisCasters)
+				irisPrimary, irisPrimaryEnd = nil, nil
+			end
 		end
-		return
-	elseif event == "IrisStop" then
-		local caster, seq = arg, tonumber(arg2)
-		local c = caster and irisCasters[caster]
-		if c and (not seq or c.seq == seq) then	-- ignore a stale stop for a newer cast
-			irisCasters[caster] = nil
-			irisRecompute()
-		end
-		return
-	elseif event == "IrisDone" then				-- a cast completed; clear tracking, let the bar ring out
-		table.wipe(irisCasters)
-		irisPrimary, irisPrimaryEnd = nil, nil
 		return
 	end
 	if not self:IsInCombat() then return end

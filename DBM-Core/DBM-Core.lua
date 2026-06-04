@@ -3622,7 +3622,7 @@ do
 	end
 
 	local dummyMod -- dummy mod for the pull timer
-	function pullTimerStart(timer, sender, target, noSync)
+	function pullTimerStart(timer, sender, target)
 			if not dummyMod then
 				local threshold = DBM.Options.PTCountThreshold2
 				threshold = floor(threshold)
@@ -3655,9 +3655,7 @@ do
 			DBM:FlashClientIcon()
 			if not DBM.Options.DontShowPT2 then
 				dummyMod.timer:Start(timer, L.TIMER_PULL)
-				if not noSync then
-					sendSync("DBMv4-Pizza", ("%s\t%s\t%s"):format(timer, L.TIMER_PULL, tostring(true))) -- Backwards compatibility so old DBMs can receive pull timers from this DBM
-				end
+				sendSync("DBMv4-Pizza", ("%s\t%s\t%s"):format(timer, L.TIMER_PULL, tostring(true))) -- Backwards compatibility so old DBMs can receive pull timers from this DBM
 			end
 			if not DBM.Options.DontShowPTCountdownText and TT then
 				if not timerTrackerRunning then--if a TimerTracker event is running not started by DBM, block creating one of our own (object gets buggy if it has 2+ events running)
@@ -3707,13 +3705,6 @@ do
 			AceTimer:ScheduleTimer(function() DBM.Options.RestoreSettingPullTimer = nil end, timer)
 	end
 
-	-- Local pull-timer start/cancel with no Pizza rebroadcast. For mods that drive the
-	-- pull timer per-client from their own synced state (e.g. Malygos Focusing Iris), so
-	-- the rank-gated network PT path is never involved. Pass timer 0 to cancel.
-	function DBM:StartPullTimer(timer, sender, noSync)
-		return pullTimerStart(timer, sender, nil, noSync)
-	end
-
 	syncHandlers["DBMv4-PT"] = function(sender, timer, senderMapID, target)
 		if DBM.Options.DontShowUserTimers then return end
 		local isTank = UnitGroupRolesAssigned(sender)
@@ -3724,8 +3715,10 @@ do
 		--Abort if mapID filter is enabled and sender actually sent a mapID. if no mapID is sent, it's always passed through (IE BW pull timers)
 		if DBM.Options.DontShowPTNoID and senderMapID and tonumber(senderMapID) ~= LastInstanceMapID then return end
 		timer = tonumber(timer or 0)
-		--We want to permit 0 itself, but block anything negative number or anything between 0 and 3
-		if (timer > 0 and timer < 3) or timer < 0 then
+		--Permit 0 (cancel) and any positive value, including sub-3s/decimal pulls (e.g. Malygos
+		--Focusing Iris). Manual /pull still blocks 0<t<3 at the sender, so only mod-issued short
+		--pulls reach here. Only negatives are rejected.
+		if timer < 0 then
 			return
 		end
 		if timer == 0 or DBM:AntiSpam(1, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time

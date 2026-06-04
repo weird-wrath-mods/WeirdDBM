@@ -21,13 +21,13 @@ local function strFromTime(time)
 	end
 end
 
-local function Pull(timer)
+local function Pull(timer, allowShort)
 	local isTank = UnitGroupRolesAssigned("player")
 	local LFGTankException = IsPartyLFG() and isTank --Tanks in LFG need to be able to send pull timer even if someone refuses to pass lead. LFG locks roles so no one can abuse this.
 	if (DBM:GetRaidRank() == 0 and IsInGroup() and not LFGTankException) or select(2, IsInInstance()) == "pvp" or DBM:IsEncounterInProgress() then
 		return DBM:AddMsg(L.ERROR_NO_PERMISSION)
 	end
-	if timer > 0 and timer < 3 then
+	if timer > 0 and timer < 3 and not allowShort then -- allowShort lets callers (e.g. Malygos key) issue sub-3s pulls
 		return DBM:AddMsg(L.TIME_TOO_SHORT)
 	end
 	local targetName = (UnitExists("target") and UnitIsEnemy("player", "target")) and UnitName("target") or nil--Filter non enemies in case player isn't targetting bos but another player/pet
@@ -57,6 +57,12 @@ local function Pull(timer)
 			DBM:Schedule(timer, SendChatMessage, L.ANNOUNCE_PULL_NOW, channel)
 		end
 	end
+end
+
+-- Public entry so mods can trigger the exact same pull as /pull N (and /pull 0 to cancel).
+-- Self rank-checks, so only leader/assist callers actually broadcast. allowShort permits sub-3s.
+function DBM:PullTimer(timer, allowShort)
+	return Pull(timer, allowShort)
 end
 
 local stringWorkaround
