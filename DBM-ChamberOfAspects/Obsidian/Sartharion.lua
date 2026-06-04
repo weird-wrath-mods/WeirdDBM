@@ -11,16 +11,17 @@ mod:RegisterCombat("yell", L.YellSarthPull)
 
 mod:RegisterEventsInCombat(
 	"SPELL_CAST_START 56908 58956",
-	"SPELL_CAST_SUCCESS 57579 59127",
+	"SPELL_CAST_SUCCESS 57579 59127 57570 59126",
 	"SPELL_AURA_APPLIED 57491",
 	"SPELL_DAMAGE 59128",
 	"CHAT_MSG_RAID_BOSS_EMOTE",
 	"CHAT_MSG_MONSTER_YELL",
-	"CHAT_MSG_MONSTER_EMOTE"
+	"CHAT_MSG_MONSTER_EMOTE",
+	"UNIT_DIED"
 )
 
 local warnShadowFissure			= mod:NewSpellAnnounce(59127, 4, nil, nil, nil, nil, nil, 2)
-local warnBreathSoon			= mod:NewSoonAnnounce(58956, 2, nil, "Tank|Healer")
+local warnBreathSoon			= mod:NewSoonAnnounce(58956, 2, nil, false)
 local warnTenebron				= mod:NewAnnounce("WarningTenebron", 2, 61248)
 local warnShadron				= mod:NewAnnounce("WarningShadron", 2, 58105)
 local warnVesperon				= mod:NewAnnounce("WarningVesperon", 2, 61251)
@@ -36,7 +37,9 @@ local specWarnFissureYou    = mod:NewSpecialWarningYou(59127, nil, nil, nil, 3, 
 local specWarnFissureClose  = mod:NewSpecialWarningClose(59127, nil, nil, nil, 2, 8)
 
 local timerShadowFissure		= mod:NewCastTimer(5, 59128, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
-local timerBreath 				= mod:NewCDTimer(10, 58956, nil, false, "Tank|Healer", 5)
+local timerBreath 				= mod:NewCDTimer(10, 58956, nil, "Tank|Healer", nil, 5)
+local timerBreathCast			= mod:NewCastTimer(2, 58956, nil, "Tank|Healer", nil, 5)
+local timerDrakeBreath			= mod:NewCDSourceTimer(17.5, 57570, nil, true, nil, 5)
 local timerWall					= mod:NewNextTimer(25, 43113, nil, nil, nil, 2)
 
 local yellFissure           = mod:NewYellMe(59127)
@@ -113,8 +116,8 @@ function mod:OnCombatStart(delay)
 	--Cache spellnames so a solo player check doesn't fail in CheckDrakes in 8.0+
 	self:Schedule(5, CheckDrakes, self, delay)
 	timerWall:Start(20-delay)
-	warnBreathSoon:Schedule(7-delay)
-	timerBreath:Start(5-delay)
+	warnBreathSoon:Schedule(3-delay)
+	timerBreath:Start(6-delay)
 
 	twipe(lastvoids)
 	twipe(lastfire)
@@ -148,8 +151,9 @@ end
 
 function mod:SPELL_CAST_START(args)
 	if args:IsSpellID(56908, 58956) then -- Flame breath
-		warnBreathSoon:Schedule(15)
+		warnBreathSoon:Schedule(7)
 		timerBreath:Start()
+		timerBreathCast:Start()
 	end
 end
 
@@ -166,6 +170,15 @@ function mod:SPELL_CAST_SUCCESS(args)
         warnShadowFissure:Show()
         warnShadowFissure:Play("watchstep")
         timerShadowFissure:Start()
+    elseif args:IsSpellID(57570, 59126) then -- Shadow Breath (Tenebron/Shadron/Vesperon)
+        timerDrakeBreath:Start(nil, args.sourceName)
+    end
+end
+
+function mod:UNIT_DIED(args)
+    local cid = DBM:GetCIDFromGUID(args.destGUID)
+    if cid == 30452 or cid == 30451 or cid == 30449 then -- a drake died, clear its breath bar
+        timerDrakeBreath:Stop(args.destName)
     end
 end
 
@@ -184,6 +197,13 @@ function mod:SPELL_DAMAGE(_, _, _, _, destName, _, spellId)
 end
 
 function mod:CHAT_MSG_MONSTER_YELL(msg, mob)
+    -- A drake's aggro yell fires the moment it lands/engages; its first Shadow Breath is 10s later.
+    if (mob == L.NameTenebron and L.YellTenebronAggro and msg:find(L.YellTenebronAggro, 1, true))
+    or (mob == L.NameShadron and L.YellShadronAggro and msg:find(L.YellShadronAggro, 1, true))
+    or (mob == L.NameVesperon and L.YellVesperonAggro and msg:find(L.YellVesperonAggro, 1, true)) then
+        timerDrakeBreath:Start(10, mob)
+        return
+    end
     if mob == L.NameTenebron and L.YellTenebronLand and msg:find(L.YellTenebronLand, 1, true) then
         timerTenebronWhelps:Start(51)       -- 22s Portal + 2s Eggs + 25s Hatch
         warnTenebronWhelpsSoon:Schedule(46)

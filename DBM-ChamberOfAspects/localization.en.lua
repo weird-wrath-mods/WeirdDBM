@@ -109,6 +109,9 @@ L:SetMiscLocalization({
 	YellShadronLand  = "I will take pity on you, Sartharion, just this once.",
 	YellVesperonLand = "Father was right about you, Sartharion. You ARE a weakling.",
 	TenebronHatch 	 = "Tenebron begins to hatch eggs in the Twilight!",
+	YellTenebronAggro = "You have no place here! Your place... is among the departed!",
+	YellShadronAggro  = "I fear nothing! Least of all you!",
+	YellVesperonAggro = "You pose no threat, lesser beings! Give me your worst!",
 })
 ------------------------
 --  The Ruby Sanctum  --
