@@ -9,15 +9,18 @@ mod:RegisterCombat("yell", L.YellPull)
 mod:SetWipeTime(45)
 
 mod:RegisterEvents(
-	"CHAT_MSG_MONSTER_YELL"
+	"CHAT_MSG_MONSTER_YELL",
+	"UNIT_SPELLCAST_START",
+	"UNIT_SPELLCAST_STOP",
+	"UNIT_SPELLCAST_INTERRUPTED"
 )
 
 mod:RegisterEventsInCombat(
 	"SPELL_AURA_APPLIED 60936 57407 56263 57429 57428 55853",
-	"SPELL_CAST_START 56505",
+	"SPELL_CAST_START 56505 57407 60936",
 	"SPELL_CAST_SUCCESS 56105 57430",
-	"CHAT_MSG_RAID_BOSS_EMOTE"
---	"UNIT_SPELLCAST_SUCCEEDED boss1"
+	"CHAT_MSG_RAID_BOSS_EMOTE",
+	"CHAT_MSG_RAID_BOSS_WHISPER"
 )
 -- General
 local enrageTimer				= mod:NewBerserkTimer(615)
@@ -41,8 +44,8 @@ local warnBreathInc				= mod:NewSoonAnnounce(56505, 3)
 local specWarnBreath			= mod:NewSpecialWarningSpell(56505, nil, nil, nil, 2, 2)
 
 local timerBreath				= mod:NewBuffActiveTimer(8, 56505, nil, nil, nil, 5) --lasts 5 seconds plus 3 sec cast.
-local timerBreathCD				= mod:NewCDTimer(65, 56505, nil, nil, nil, 2)
-local timerIntermission			= mod:NewPhaseTimer(22)
+local timerBreathCD				= mod:NewCDTimer(71, 56505, nil, nil, nil, 2)	-- 65s schedule + ~4s travel to center + ~2secs of preamble, so the bar lands on the cast not ~6s early
+local timerIntermission			= mod:NewPhaseTimer(23)
 
 -- Stage Three
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(3))
@@ -51,16 +54,64 @@ local warnSurge					= mod:NewTargetAnnounce(60936, 3)
 --local warnStaticField			= mod:NewTargetNoFilterAnnounce(57430, 3)
 
 local specWarnSurge				= mod:NewSpecialWarningDefensive(60936, nil, nil, nil, 1, 2)
-local specWarnP3SurgeOfPowerSoon= mod:NewSpecialWarningYou(60936, nil, nil, nil, 1, 2)
 local specWarnStaticField		= mod:NewSpecialWarningYou(57430, nil, nil, nil, 1, 2)
 --local specWarnStaticFieldNear	= mod:NewSpecialWarningClose(57430, nil, nil, nil, 1, 2)
 local yellStaticField			= mod:NewYellMe(57430, nil, false)
 
-local timerStaticFieldCD		= mod:NewCDTimer(12, 57430, nil, nil, nil, 3)
+local timerSurgeCD				= mod:NewCDTimer(7, 60936, nil, nil, nil, 2)	-- P3 Surge of Power, recurs every 7s
+local timerSurgeYou				= mod:NewCastTimer(3, 60936, "SURGE INCOMING", nil, nil, 1)	-- personal: "fixes his eyes on you" whisper to beam impact is a fixed 3s (the script's selector delay)
 
 local tableBuild = false
 local guids = {}
 local startedPhase1 = false
+
+-- Focusing Iris pull timer (rank-agnostic trigger, official /pull propagation).
+-- The key cast happens pre-combat, so each player detects their OWN cast and broadcasts it (any
+-- rank). The GROUP LEADER's client tracks the casters, resolves precedence, and fires the real
+-- pull command (DBM:PullTimer -> Commands.lua Pull = exactly what /pull N and /pull 0 do). So the
+-- pull is fully legitimate/synced and self-cleans (bar, sync, chat countdown), while any key user
+-- can still trigger it.
+local function amIPullRelay()
+	-- Single deterministic relayer so we never emit duplicate pull timers.
+	if GetNumRaidMembers() > 0 then
+		return IsRaidLeader()
+	elseif GetNumPartyMembers() > 0 then
+		return IsPartyLeader()
+	end
+	return true	-- solo (testing)
+end
+
+local irisNormalName	= GetSpellInfo(61003)	-- "Key to the Focusing Iris"
+local irisHeroicName	= GetSpellInfo(61004)	-- "Heroic Key to the Focusing Iris"
+local irisCasters		= {}					-- [casterName] = { endTime = GetTime-based, seq = n }
+local irisPrimary, irisPrimaryEnd
+local myIrisCasting		= false
+local myIrisEnd			= 0
+local myIrisSeq			= 0						-- bumps each cast so cancels never collide with the 8s sync throttle
+local mhuge, mabs		= math.huge, math.abs
+
+local function irisRecompute()
+	local primary, endTime = nil, mhuge
+	for caster, c in pairs(irisCasters) do
+		if c.endTime < endTime then endTime, primary = c.endTime, caster end
+	end
+	-- "First caster wins": a later caster's endTime is larger, so it never overtakes the first
+	-- while the first is live. Only (re)set the bar when the primary changes, or the same primary
+	-- re-casts (endTime shifts) -- additional casters don't disturb the running timer.
+	if primary ~= irisPrimary or (primary and irisPrimaryEnd and mabs(endTime - irisPrimaryEnd) > 0.3) then
+		irisPrimary, irisPrimaryEnd = primary, endTime
+		if primary then
+			local remaining = endTime - GetTime()
+			DBM:Debug(("Iris: pull primary = %s, %.2fs left"):format(primary, remaining), 2)
+			if remaining > 0 then
+				DBM:PullTimer(remaining, true)			-- leader fires the real /pull (allowShort: sub-3s/decimal ok)
+			end
+		else
+			DBM:Debug("Iris: no casters left, cancelling pull", 2)
+			DBM:PullTimer(0)							-- real /pull 0: cancels bar AND unschedules chat countdown
+		end
+	end
+end
 
 local function buildGuidTable()
 	table.wipe(guids)
@@ -98,6 +149,10 @@ function mod:OnCombatStart(delay)
 	timerAchieve:Start(-delay)
 	startedPhase1 = false
 	table.wipe(guids)
+	-- Iris pull is resolved once we're in combat; clear tracking for any future re-pull
+	table.wipe(irisCasters)
+	irisPrimary, irisPrimaryEnd = nil, nil
+	myIrisCasting = false
 	self:RegisterShortTermEvents(
 		"SWING_DAMAGE",
 		"SWING_MISSED"
@@ -134,8 +189,7 @@ function mod:SPELL_AURA_APPLIED(args)
 				specWarnSurge:Play("defensive")
 			end
 		end
-	elseif args:IsSpellID(57429) then
-			timerStaticFieldCD:Start()
+	elseif args:IsSpellID(57429) then	-- in-field damage; personal warning only (not a cast-time signal)
 		local target = guids[args.destGUID]
 		if target == UnitName("player") then
 			specWarnStaticField:Show()
@@ -143,6 +197,21 @@ function mod:SPELL_AURA_APPLIED(args)
 			yellStaticField:Yell()
 		end
 	end
+end
+
+-- Breath-firing bar (8s = ~3s cast windup + ~5s sweep): natural during the windup, red for the
+-- final 5s once the sweep/beam is live. Reused bars keep self.color, so reset to natural each start.
+local breathRed = { r = 1, g = 0, b = 0 }
+local function breathFireRed()
+	local bar = DBT:GetBar(timerBreath.id)
+	if bar then bar:SetColor(breathRed) end
+end
+local function startBreathFire()
+	timerBreath:Start()
+	mod:Unschedule(breathFireRed)
+	local bar = DBT:GetBar(timerBreath.id)
+	if bar then bar:SetColor({ DBT:GetColorForType(5) }) end	-- natural (timerBreath colorType 5)
+	mod:Schedule(3, breathFireRed)	-- 8s bar -> red at 5s left
 end
 
 -- not really sure which one this spell is casted by. Use both i guess
@@ -154,8 +223,10 @@ function mod:SPELL_CAST_START(args)
 	if spellId == 56505 then--His deep breath
 		specWarnBreath:Show()
 		specWarnBreath:Play("findshield")
-		timerBreath:Start()
+		startBreathFire()
 		timerBreathCD:Start()
+	elseif spellId == 57407 or spellId == 60936 then	-- P3 Surge of Power (channeled, so it logs cast-start)
+		timerSurgeCD:Start()
 	end
 end
 
@@ -173,11 +244,6 @@ function mod:SPELL_CAST_SUCCESS(args)
 --		if timerSummonPowerSpark:GetTime() < 11 and timerSummonPowerSpark:IsStarted() then
 --			timerSummonPowerSpark:Update(18, 30)
 --		end
-	if spellId == 57430 then
-		self:ScheduleMethod(0.1, "StaticFieldTarget")
-		--warnStaticField:Show()
-		timerStaticFieldCD:Start()
-	end
 end
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
@@ -204,6 +270,7 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		self:SendSync("Phase3")
 	elseif msg == L.EnoughScream then
 		timerBreathCD:Stop()
+		self:Unschedule(breathFireRed)
 --		timerAttackable:Start()
 --		timerStaticFieldCD:Start(6)
 	end
@@ -214,21 +281,80 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg)
 		warnSummonPowerSpark:Show()
 		timerSummonPowerSpark:Start()
 	end
-	if msg == L.EmoteSurge or msg:find(L.EmoteSurge) then
-		self:SendSync("MalygosSurge", UnitName("player"))
+end
+
+-- Spoken "3, 2, 1" audio countdown over the 3s from the whisper to the beam landing, using the player's DBM
+-- CountdownVoice pack (PlayCountSound -> <voice>/N.ogg). A voice cuts through combat noise better than text.
+local function startSurgeCountdown()
+	DBM:PlayCountSound(3)
+	mod:Schedule(1, function() DBM:PlayCountSound(2) end)
+	mod:Schedule(2, function() DBM:PlayCountSound(1) end)
+end
+
+-- The surge target-warning arrives as a target-only RAID_BOSS_WHISPER 3s before the cast lands on you. The
+-- server sends the raw creature_text ("%s fixes his eyes on you!"); the client only fills the %s for display,
+-- so the addon gets the literal string, identical to L.EmoteSurge -> a direct equality is the exact match.
+function mod:CHAT_MSG_RAID_BOSS_WHISPER(msg)
+	if msg == L.EmoteSurge then
+		--timerSurgeYou:Start()	-- 3s personal bar off; the Surge in 3/2/1 countdown + recurring CD bar cover it now
+		startSurgeCountdown()
 	end
 end
 
---[[localization free triggers that's better but can only be used where boss1 UnitId available
-function mod:UNIT_SPELLCAST_SUCCEEDED(_, spellName)
---	"<39.8> [UNIT_SPELLCAST_SUCCEEDED] Malygos:Possible Target<Omegal>:target:Summon Power Spark::0:56140", -- [998]
-	if spellName == GetSpellInfo(56140) then
-		warnSummonPowerSpark:Show()
-		timerSummonPowerSpark:Start()
+-- Detect the local player's own Focusing Iris cast and broadcast it (any rank).
+function mod:UNIT_SPELLCAST_START(uId)
+	if uId ~= "player" then return end
+	local name, _, _, _, startMs, endMs = UnitCastingInfo("player")
+	if name and (name == irisNormalName or name == irisHeroicName) then
+		myIrisSeq = myIrisSeq + 1
+		myIrisCasting = true
+		myIrisEnd = endMs / 1000
+		-- Broadcast the cast's full length (end - start), not (end - now). Each caster sends this once at their
+		-- own cast-start, and the relay timestamps it on receipt, so endTime = receiveTime + castLen lands on that
+		-- caster's true cast-end -> precedence across multiple casters is preserved. Using (end - now) instead
+		-- subtracts the ~0.1s we lose detecting UNIT_SPELLCAST_START after a /reload, which floored the bar to 4s.
+		local castLen = (endMs - startMs) / 1000
+		DBM:Debug(("Iris: own cast detected, %.2fs cast (seq %d)"):format(castLen, myIrisSeq), 2)
+		self:SendSync("IrisStart", ("%.2f"):format(castLen), UnitName("player"), myIrisSeq)
 	end
-end]]
+end
 
-function mod:OnSync(event, arg)
+function mod:UNIT_SPELLCAST_STOP(uId)
+	if uId ~= "player" or not myIrisCasting then return end
+	myIrisCasting = false
+	if GetTime() >= myIrisEnd - 0.25 then	-- reached the end -> it went off, fight is starting
+		self:SendSync("IrisDone", UnitName("player"))
+	else									-- stopped early -> cancelled/interrupted
+		self:SendSync("IrisStop", UnitName("player"), myIrisSeq)
+	end
+end
+mod.UNIT_SPELLCAST_INTERRUPTED = mod.UNIT_SPELLCAST_STOP
+
+function mod:OnSync(event, arg, arg2, arg3)
+	-- Focusing Iris syncs arrive pre-combat. Only the group leader acts on them, relaying the
+	-- result as the official pull timer; everyone else just receives that pull timer normally.
+	if event == "IrisStart" or event == "IrisStop" or event == "IrisDone" then
+		if amIPullRelay() then
+			if event == "IrisStart" then
+				local remaining, caster, seq = tonumber(arg), arg2, tonumber(arg3)
+				if caster and remaining and remaining > 0 then
+					irisCasters[caster] = { endTime = GetTime() + remaining, seq = seq or 0 }
+					irisRecompute()
+				end
+			elseif event == "IrisStop" then
+				local caster, seq = arg, tonumber(arg2)
+				local c = caster and irisCasters[caster]
+				if c and (not seq or c.seq == seq) then	-- ignore a stale stop for a newer cast
+					irisCasters[caster] = nil
+					irisRecompute()
+				end
+			else										-- IrisDone: a cast completed, clear tracking
+				table.wipe(irisCasters)
+				irisPrimary, irisPrimaryEnd = nil, nil
+			end
+		end
+		return
+	end
 	if not self:IsInCombat() then return end
 	if event == "Phase2" then
 		self:SetStage(2)
@@ -237,7 +363,12 @@ function mod:OnSync(event, arg)
 		warnVortexSoon:Cancel()
 		warnPhase2:Show()
 		timerIntermission:Start()
-		timerBreathCD:Start(79)
+		local stageBar = DBT:GetBar(timerIntermission.id)	-- force the "Next Stage" bar onto the huge bar regardless of length
+		if stageBar then
+			stageBar:ResetAnimations(true)
+			DBT:UpdateBars()
+		end
+		timerBreathCD:Start(85)	-- 79 + ~4s travel to center + ~2secs of preamble, matching the recurrent bar
 	elseif event == "BreathSoon" then
 		warnBreathInc:Show()
 	elseif event == "Phase3" then
@@ -245,12 +376,11 @@ function mod:OnSync(event, arg)
 		warnPhase3:Show()
 		self:Schedule(6, buildGuidTable)
 		timerBreathCD:Cancel()
---		timerStaticFieldCD:Start(20.2) -- REVIEW! ~4s variance? (10man Lordaeron 2022/09/27 || 25man Lordaeron 2022/09/27) - Stage 3/24.5 || Stage 3/20.2
-	elseif event == "MalygosSurge" then
-		warnSurge:CombinedShow(0.2, arg)
-		if arg == UnitName("player") then
-			specWarnP3SurgeOfPowerSoon:Show()
-			specWarnP3SurgeOfPowerSoon:Play("findshield")
-		end
+		self:Unschedule(breathFireRed)
+		-- Seed the first Surge bar from the script chain off the intro yell (SAY_INTRO_PHASE_3, our trigger):
+		-- yell is +3s after the descent MovePoint; boss drops 75yd to the fight position at 20yd/s run = 3.75s
+		-- (arrives yell+0.75s), arrival -> EVENT_START_PHASE_3 +6s -> first surge event +4-7s -> real channeled
+		-- cast +3s selector delay. So yell -> first SPELL_CAST_START = 13.75-16.75s; self-corrects to 7s after.
+		timerSurgeCD:Start("v13.75-16.75")
 	end
 end

@@ -3715,11 +3715,13 @@ do
 		--Abort if mapID filter is enabled and sender actually sent a mapID. if no mapID is sent, it's always passed through (IE BW pull timers)
 		if DBM.Options.DontShowPTNoID and senderMapID and tonumber(senderMapID) ~= LastInstanceMapID then return end
 		timer = tonumber(timer or 0)
-		--We want to permit 0 itself, but block anything negative number or anything between 0 and 3
-		if (timer > 0 and timer < 3) or timer < 0 then
+		--Permit 0 (cancel) and any positive value, including sub-3s/decimal pulls (e.g. Malygos
+		--Focusing Iris). Manual /pull still blocks 0<t<3 at the sender, so only mod-issued short
+		--pulls reach here. Only negatives are rejected.
+		if timer < 0 then
 			return
 		end
-		if timer == 0 or DBM:AntiSpam(1, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time
+		if timer == 0 or DBM:AntiSpam(0.5, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time
 			pullTimerStart(timer, sender, target)
 		end
 	end
