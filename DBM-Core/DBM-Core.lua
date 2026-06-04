@@ -3721,7 +3721,7 @@ do
 		if timer < 0 then
 			return
 		end
-		if timer == 0 or DBM:AntiSpam(1, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time
+		if timer == 0 or DBM:AntiSpam(0.5, "PT"..sender) then--prevent double pull timer from BW and other mods that are sending D4 and D5 at same time
 			pullTimerStart(timer, sender, target)
 		end
 	end
