@@ -19,7 +19,8 @@ mod:RegisterEventsInCombat(
 	"SPELL_AURA_APPLIED 60936 57407 56263 57429 57428 55853",
 	"SPELL_CAST_START 56505 57407 60936",
 	"SPELL_CAST_SUCCESS 56105 57430",
-	"CHAT_MSG_RAID_BOSS_EMOTE"
+	"CHAT_MSG_RAID_BOSS_EMOTE",
+	"CHAT_MSG_RAID_BOSS_WHISPER"
 )
 -- General
 local enrageTimer				= mod:NewBerserkTimer(615)
@@ -44,7 +45,7 @@ local specWarnBreath			= mod:NewSpecialWarningSpell(56505, nil, nil, nil, 2, 2)
 
 local timerBreath				= mod:NewBuffActiveTimer(8, 56505, nil, nil, nil, 5) --lasts 5 seconds plus 3 sec cast.
 local timerBreathCD				= mod:NewCDTimer(71, 56505, nil, nil, nil, 2)	-- 65s schedule + ~4s travel to center + ~2secs of preamble, so the bar lands on the cast not ~6s early
-local timerIntermission			= mod:NewPhaseTimer(22)
+local timerIntermission			= mod:NewPhaseTimer(23)
 
 -- Stage Three
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(3))
@@ -59,6 +60,7 @@ local specWarnStaticField		= mod:NewSpecialWarningYou(57430, nil, nil, nil, 1, 2
 local yellStaticField			= mod:NewYellMe(57430, nil, false)
 
 local timerSurgeCD				= mod:NewCDTimer(7, 60936, nil, nil, nil, 2)	-- P3 Surge of Power, recurs every 7s
+local timerSurgeYou				= mod:NewCastTimer(3, 60936, nil, nil, nil, 1)	-- personal: "fixes his eyes on you" whisper to beam impact is a fixed 3s (the script's selector delay)
 
 local tableBuild = false
 local guids = {}
@@ -280,8 +282,16 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg)
 		warnSummonPowerSpark:Show()
 		timerSummonPowerSpark:Start()
 	end
-	if msg == L.EmoteSurge or msg:find(L.EmoteSurge) then
-		self:SendSync("MalygosSurge", UnitName("player"))
+end
+
+-- The surge target-warning arrives as a target-only RAID_BOSS_WHISPER 3s before the cast lands on you. The
+-- server sends the raw creature_text ("%s fixes his eyes on you!"); the client only fills the %s for display,
+-- so the addon gets the literal string, identical to L.EmoteSurge -> a direct equality is the exact match.
+function mod:CHAT_MSG_RAID_BOSS_WHISPER(msg)
+	if msg == L.EmoteSurge then
+		timerSurgeYou:Start()
+		specWarnP3SurgeOfPowerSoon:Show()
+		specWarnP3SurgeOfPowerSoon:Play("findshield")
 	end
 end
 
@@ -356,12 +366,10 @@ function mod:OnSync(event, arg, arg2, arg3)
 		self:Schedule(6, buildGuidTable)
 		timerBreathCD:Cancel()
 		self:Unschedule(breathFireRed)
-		timerSurgeCD:Start("v4-7")			-- first Surge of Power ~4-7s into P3, then anchored on its cast-start
-	elseif event == "MalygosSurge" then
-		warnSurge:CombinedShow(0.2, arg)
-		if arg == UnitName("player") then
-			specWarnP3SurgeOfPowerSoon:Show()
-			specWarnP3SurgeOfPowerSoon:Play("findshield")
-		end
+		-- Seed the first Surge bar from the script chain off the intro yell (SAY_INTRO_PHASE_3, our trigger):
+		-- yell is +3s after the descent MovePoint; boss drops 75yd to the fight position at 20yd/s run = 3.75s
+		-- (arrives yell+0.75s), arrival -> EVENT_START_PHASE_3 +6s -> first surge event +4-7s -> real channeled
+		-- cast +3s selector delay. So yell -> first SPELL_CAST_START = 13.75-16.75s; self-corrects to 7s after.
+		timerSurgeCD:Start("v13.75-16.75")
 	end
 end
