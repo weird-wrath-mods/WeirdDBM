@@ -44,7 +44,7 @@ local warnBreathInc				= mod:NewSoonAnnounce(56505, 3)
 local specWarnBreath			= mod:NewSpecialWarningSpell(56505, nil, nil, nil, 2, 2)
 
 local timerBreath				= mod:NewBuffActiveTimer(8, 56505, nil, nil, nil, 5) --lasts 5 seconds plus 3 sec cast.
-local timerBreathCD				= mod:NewCDTimer(65, 56505, nil, nil, nil, 2)
+local timerBreathCD				= mod:NewCDTimer(69, 56505, nil, nil, nil, 2)	-- 65s schedule + ~4s travel to center, so the bar lands on the cast not ~4s early
 local timerIntermission			= mod:NewPhaseTimer(22)
 
 -- Stage Three
@@ -200,6 +200,21 @@ function mod:SPELL_AURA_APPLIED(args)
 	end
 end
 
+-- Breath-firing bar (8s = ~3s cast windup + ~5s sweep): natural during the windup, red for the
+-- final 5s once the sweep/beam is live. Reused bars keep self.color, so reset to natural each start.
+local breathRed = { r = 1, g = 0, b = 0 }
+local function breathFireRed()
+	local bar = DBT:GetBar(timerBreath.id)
+	if bar then bar:SetColor(breathRed) end
+end
+local function startBreathFire()
+	timerBreath:Start()
+	mod:Unschedule(breathFireRed)
+	local bar = DBT:GetBar(timerBreath.id)
+	if bar then bar:SetColor({ DBT:GetColorForType(5) }) end	-- natural (timerBreath colorType 5)
+	mod:Schedule(3, breathFireRed)	-- 8s bar -> red at 5s left
+end
+
 -- not really sure which one this spell is casted by. Use both i guess
 function mod:SPELL_CAST_START(args)
 	local spellId = args.spellId
@@ -209,7 +224,7 @@ function mod:SPELL_CAST_START(args)
 	if spellId == 56505 then--His deep breath
 		specWarnBreath:Show()
 		specWarnBreath:Play("findshield")
-		timerBreath:Start()
+		startBreathFire()
 		timerBreathCD:Start()
 	end
 end
@@ -259,6 +274,7 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		self:SendSync("Phase3")
 	elseif msg == L.EnoughScream then
 		timerBreathCD:Stop()
+		self:Unschedule(breathFireRed)
 --		timerAttackable:Start()
 --		timerStaticFieldCD:Start(6)
 	end
@@ -340,7 +356,12 @@ function mod:OnSync(event, arg, arg2, arg3)
 		warnVortexSoon:Cancel()
 		warnPhase2:Show()
 		timerIntermission:Start()
-		timerBreathCD:Start(79)
+		local stageBar = DBT:GetBar(timerIntermission.id)	-- force the "Next Stage" bar onto the huge bar regardless of length
+		if stageBar then
+			stageBar:ResetAnimations(true)
+			DBT:UpdateBars()
+		end
+		timerBreathCD:Start(83)	-- 79 + ~4s travel to center, matching the recurrent bar
 	elseif event == "BreathSoon" then
 		warnBreathInc:Show()
 	elseif event == "Phase3" then
@@ -348,6 +369,7 @@ function mod:OnSync(event, arg, arg2, arg3)
 		warnPhase3:Show()
 		self:Schedule(6, buildGuidTable)
 		timerBreathCD:Cancel()
+		self:Unschedule(breathFireRed)
 --		timerStaticFieldCD:Start(20.2) -- REVIEW! ~4s variance? (10man Lordaeron 2022/09/27 || 25man Lordaeron 2022/09/27) - Stage 3/24.5 || Stage 3/20.2
 	elseif event == "MalygosSurge" then
 		warnSurge:CombinedShow(0.2, arg)
