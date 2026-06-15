@@ -2435,7 +2435,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 2
+local WEIRD_DEFAULT_REV = 3
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2452,6 +2452,10 @@ local weirdDefaultMigrations = {
 		-- Four Horsemen per-horseman abilities default OFF: Meteor + Holy Wrath + Bone Barrier (alert + timer).
 		-- Blaumeux/Void Zone alerts deliberately kept ON.
 		Horsemen = {"announce57467spell", "Timer57467cd", "announceother28883target", "Timer28883cd", "announceother29061target", "Timer29061target"},
+	},
+	[3] = {
+		-- Sapphiron "Life Drain soon" pre-warn default OFF for everyone (the Life Drain "now" alert stays dispel-gated)
+		Sapphiron = {"announce28542soon"},
 	},
 }
 

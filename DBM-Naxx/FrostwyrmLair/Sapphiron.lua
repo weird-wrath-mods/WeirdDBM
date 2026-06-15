@@ -27,8 +27,8 @@ local berserkTimer		= mod:NewBerserkTimer(900, nil, nil, nil, false) -- berserk 
 
 -- Stage One (Ground Phase)
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1))
-local warnDrainLifeNow	= mod:NewSpellAnnounce(28542, 2)
-local warnDrainLifeSoon	= mod:NewSoonAnnounce(28542, 1)
+local warnDrainLifeNow	= mod:NewSpellAnnounce(28542, 2, nil, "RemoveCurse") -- default ON only for curse-dispel classes
+local warnDrainLifeSoon	= mod:NewSoonAnnounce(28542, 1, nil, false) -- default OFF for everyone
 local warnAirPhaseSoon	= mod:NewAnnounce("WarningAirPhaseSoon", 3, "Interface\\AddOns\\DBM-Core\\textures\\CryptFiendUnBurrow.blp")
 local warnLanded		= mod:NewAnnounce("WarningLanded", 4, "Interface\\AddOns\\DBM-Core\\textures\\CryptFiendBurrow.blp")
 
