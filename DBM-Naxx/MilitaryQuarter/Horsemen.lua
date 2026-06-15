@@ -18,10 +18,10 @@ mod:RegisterEventsInCombat(
 
 --TODO, first marks
 local warnMarkSoon				= mod:NewAnnounce("WarningMarkSoon", 1, 28835, false, nil, nil, 28835)
-local warnMeteor				= mod:NewSpellAnnounce(57467, 4)
-local warnVoidZone				= mod:NewTargetNoFilterAnnounce(28863, 3)--Only warns for nearby targets, to reduce spam
+local warnMeteor				= mod:NewSpellAnnounce(57467, 4, nil, false) -- default OFF
+local warnVoidZone				= mod:NewTargetNoFilterAnnounce(28863, 3)--Only warns for nearby targets, to reduce spam (Blaumeux: kept ON)
 local warnHolyWrath				= mod:NewTargetNoFilterAnnounce(28883, 3, nil, false)
-local warnBoneBarrier			= mod:NewTargetNoFilterAnnounce(29061, 2)
+local warnBoneBarrier			= mod:NewTargetNoFilterAnnounce(29061, 2, nil, false) -- default OFF
 
 local specWarnMarkOnPlayer		= mod:NewSpecialWarning("SpecialWarningMarkOnPlayer", nil, nil, nil, 1, 6, nil, nil, 28835)
 local specWarnVoidZone			= mod:NewSpecialWarningYou(28863, nil, nil, nil, 1, 2)
@@ -31,10 +31,10 @@ local timerLadyMark				= mod:NewNextTimer(15, 28833, nil, nil, nil, 3)
 local timerZeliekMark			= mod:NewNextTimer(15, 28835, nil, nil, nil, 3)
 local timerBaronMark			= mod:NewNextTimer(12, 28834, nil, nil, nil, 3)
 local timerThaneMark			= mod:NewNextTimer(12, 28832, nil, nil, nil, 3)
-local timerMeteorCD				= mod:NewCDTimer(15, 57467, nil, nil, nil, 3, nil, nil, true)
+local timerMeteorCD				= mod:NewCDTimer(15, 57467, nil, false, nil, 3, nil, nil, true) -- default OFF
 --local timerVoidZoneCD			= mod:NewCDTimer(12.9, 28863, nil, nil, nil, 3)-- 12.9-16
-local timerHolyWrathCD			= mod:NewCDTimer(15, 28883, nil, nil, nil, 3)
-local timerBoneBarrier			= mod:NewTargetTimer(20, 29061, nil, nil, nil, 5)
+local timerHolyWrathCD			= mod:NewCDTimer(15, 28883, nil, false, nil, 3) -- default OFF
+local timerBoneBarrier			= mod:NewTargetTimer(20, 29061, nil, false, nil, 5) -- default OFF
 
 mod:AddRangeFrameOption("12", nil, false) -- range frame default OFF
 
