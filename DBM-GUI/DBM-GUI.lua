@@ -316,6 +316,10 @@ local function addOptions(mod, catpanel, v)
 			end)
 			catbutton:SetScript("OnClick", function(self)
 				mod.Options[v] = not mod.Options[v]
+				if type(mod.DefaultOptions[v]) == "string" then
+					--User manually chose a spec-flag-defaulted option; stop re-resolving it per character each load
+					mod.Options[v .. "SpecAutoForced"] = true
+				end
 				if mod.optionFuncs and mod.optionFuncs[v] then
 					mod.optionFuncs[v]()
 				end

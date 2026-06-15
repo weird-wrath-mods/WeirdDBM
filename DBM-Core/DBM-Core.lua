@@ -2432,6 +2432,24 @@ function DBM:AddDefaultOptions(t1, t2)
 	end
 end
 
+--WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
+--and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
+--never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
+local WEIRD_DEFAULT_REV = 1
+local weirdDefaultMigrations = {
+	[1] = {
+		Patchwerk = {"timer_berserk"},
+		Gluth     = {"timer_berserk", "Timer28371active"},
+		Thaddius  = {"timer_berserk"},
+		Sapphiron = {"timer_berserk"},
+		Malygos   = {"timer_berserk"},
+		Grobbulus = {"timer_berserk"},
+		Loatheb   = {"timer_berserk"},
+		Faerlina  = {"Timer54098cd"},
+		Horsemen  = {"RangeFrame"},
+	},
+}
+
 function DBM:LoadModOptions(modId, inCombat, first, profileName, profileID)
 	local oldSavedVarsName = modId:gsub("-", "").."_SavedVars"
 	local savedVarsName = modId:gsub("-", "").."_AllSavedVars"
@@ -2482,12 +2500,37 @@ function DBM:LoadModOptions(modId, inCombat, first, profileName, profileID)
 						optionValue = mod:GetRoleFlagValue(optionValue)
 					end
 					savedOptions[id][profileNum][option] = optionValue
+				elseif type(optionValue) == "string" and not savedOptions[id][profileNum][option .. "SpecAutoForced"] then
+					--Spec-flag default the user has NOT manually overridden: re-resolve live for the current character/spec on every load.
+					--This makes dispel/role-based defaults behave per-character even in the shared Global scope.
+					savedOptions[id][profileNum][option] = mod:GetRoleFlagValue(optionValue)
 				end
+			end
+			--WeirdDBM one-time default migration: force our changed-default options onto existing saved settings, once per scope.
+			local fromRev = savedOptions[id][profileNum].WeirdDefRev or 0
+			if fromRev < WEIRD_DEFAULT_REV then
+				for rev = fromRev + 1, WEIRD_DEFAULT_REV do
+					local opts = weirdDefaultMigrations[rev] and weirdDefaultMigrations[rev][id]
+					if opts then
+						for _, opt in ipairs(opts) do
+							local default = mod.DefaultOptions[opt]
+							if type(default) == "table" then
+								default = default.value
+							elseif type(default) == "string" then
+								default = mod:GetRoleFlagValue(default)
+							end
+							if default ~= nil then
+								savedOptions[id][profileNum][opt] = default
+							end
+						end
+					end
+				end
+				savedOptions[id][profileNum].WeirdDefRev = WEIRD_DEFAULT_REV
 			end
 			--clean unused saved variables (do not work on combat load)
 			if not inCombat then
 				for option, _ in pairs(savedOptions[id][profileNum]) do
-					if mod.DefaultOptions[option] == nil and not (option:find("talent") or option:find("FastestClear") or option:find("CVAR") or option:find("RestoreSetting") or option:find("Permanent")) then -- added Permanent for mod options that I want to keep between sessions e.g. Frame positions
+					if mod.DefaultOptions[option] == nil and not (option:find("talent") or option:find("FastestClear") or option:find("CVAR") or option:find("RestoreSetting") or option:find("Permanent") or option:find("SpecAutoForced") or option == "WeirdDefRev") then -- added Permanent for mod options that I want to keep between sessions e.g. Frame positions; SpecAutoForced marks spec-flag defaults the user manually overrode; WeirdDefRev is the one-time default-migration stamp
 						savedOptions[id][profileNum][option] = nil
 					elseif mod.DefaultOptions[option] and (type(mod.DefaultOptions[option]) == "table") then--recover broken dropdown option
 						if savedOptions[id][profileNum][option] and (type(savedOptions[id][profileNum][option]) == "boolean") then
@@ -5785,9 +5828,15 @@ do
 
 	function DBM:SetCurrentSpecInfo()
 		currentSpecGroup = GetSpecialization() or 1
-		if GetSpecializationInfo(currentSpecGroup) then
-			currentSpecID, currentSpecName = GetSpecializationInfo(currentSpecGroup)--give temp first spec id for non-specialization char. no one should use dbm with no specialization, below level 10, should not need dbm.
-			currentSpecID = tonumber(currentSpecID)
+		local specID, specName = GetSpecializationInfo(currentSpecGroup)
+		if not specID and specsTable[playerClass] then
+			--LibGroupTalents had no talent data (common solo / right after load), which otherwise drops us to the
+			--flag-less "Initial <class>" template and breaks role/dispel SpecFlag defaults (e.g. RemoveDisease/RemoveCurse).
+			--Resolve the player's own spec from native talents instead: currentSpecGroup is the dominant talent tab.
+			specID, specName = specsTable[playerClass][currentSpecGroup], playerClass
+		end
+		if specID then
+			currentSpecID, currentSpecName = tonumber(specID), specName
 		else
 			currentSpecID, currentSpecName = fallbackClassToRole[playerClass], playerClass
 		end
@@ -11238,12 +11287,14 @@ do
 		timer = timer <= 0 and self.timer - mabs(timer) or timer
 		self.bar:SetTimer(timer)
 		self.bar:Start()
-		if self.warning1 then
+		-- Berserk warnings share the bar's timer_berserk option so the whole feature toggles together
+		local enabled = self.bar.mod.Options[self.bar.option]
+		if self.warning1 and enabled then
 			if timer > 660 then self.warning1:Schedule(timer - 600, 10, L.MIN) end
 			if timer > 300 then self.warning1:Schedule(timer - 300, 5, L.MIN) end
 			if timer > 180 then self.warning2:Schedule(timer - 180, 3, L.MIN) end
 		end
-		if self.warning2 then
+		if self.warning2 and enabled then
 			if timer > 60 then self.warning2:Schedule(timer - 60, 1, L.MIN) end
 			if timer > 30 then self.warning2:Schedule(timer - 30, 30, L.SEC) end
 			if timer > 10 then self.warning2:Schedule(timer - 10, 10, L.SEC) end
@@ -11266,12 +11317,12 @@ do
 	end
 	enragePrototype.Stop = enragePrototype.Cancel
 
-	function bossModPrototype:NewBerserkTimer(timer, text, barText, barIcon)
+	function bossModPrototype:NewBerserkTimer(timer, text, barText, barIcon, optionDefault)
 		timer = timer or 600
 		local warning1 = self:NewAnnounce(text or L.GENERIC_WARNING_BERSERK, 1, nil, "warning_berserk", false)
 		local warning2 = self:NewAnnounce(text or L.GENERIC_WARNING_BERSERK, 4, nil, "warning_berserk", false)
 		--timer, name, icon, optionDefault, optionName, colorType, inlineIcon, keep, countdown, countdownMax, r, g, b, spellId, requiresCombat, waCustomName, customType
-		local bar = self:NewTimer(timer, barText or L.GENERIC_TIMER_BERSERK, barIcon or 28131, nil, "timer_berserk", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "berserk")
+		local bar = self:NewTimer(timer, barText or L.GENERIC_TIMER_BERSERK, barIcon or 28131, optionDefault, "timer_berserk", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "berserk")
 		local obj = setmetatable(
 			{
 				warning1 = warning1,
