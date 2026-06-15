@@ -83,7 +83,7 @@ end
 
 DBM = {
 	Revision = parseCurseDate("20260416000000"),
-	DisplayVersion = "10.1.13 alpha", -- the string that is shown as version
+	DisplayVersion = GetAddOnMetadata("DBM-Core", "Version") or "<unknown version>", -- read from the TOC ## Version (single source of truth)
 	ReleaseRevision = releaseDate(2026, 04, 16) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
 }
 

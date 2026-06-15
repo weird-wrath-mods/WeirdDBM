@@ -5,10 +5,10 @@ local CL = DBM_CORE_L
 
 L.MainFrame 						= CL.DEADLY_BOSS_MODS -- NO TRANSLATE
 
-L.DBMWarmane						= CL.DBM .. "-Chromiecraft"
+L.DBMWarmane						= GetAddOnMetadata("DBM-Core", "X-DisplayName") or "WeirdDBM"
 L.TranslationByPrefix				= "Retail backport by "
 L.TranslationBy						= "Barsoom, Bunny67, Zidras"
-L.Website							= "Updates on GitHub at |cFF73C2FBhttps://github.com/5Buttons/DBM-Chromiecraft|r"
+L.Website							= "Updates on GitHub at |cFF73C2FB" .. (GetAddOnMetadata("DBM-Core", "X-Website") or "https://github.com/weird-wrath-mods/WeirdDBM") .. "|r"
 L.WebsiteButton						= "Website"
 
 L.OTabBosses						= "Boss Options"--Deprecated and will be deleted once tabs no longer use this

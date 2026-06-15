@@ -17,8 +17,9 @@
 ## LoadOnDemand: 0
 ## DefaultState: enabled
 ## Author: Barsoom, Bunny67, Zidras, DBM-Frostmourne contributors, original DBM team
-## Version: 10.1.13_alpha-wv1
+## Version: 10.1.14 wv
 ## X-Website: https://github.com/weird-wrath-mods/WeirdDBM
+## X-DisplayName: WeirdDBM
 
 compat.lua
 
