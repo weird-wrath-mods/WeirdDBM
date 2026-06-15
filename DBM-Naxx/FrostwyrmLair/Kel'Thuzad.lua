@@ -14,9 +14,9 @@ mod:SetEncounterID(1114)
 mod:RegisterCombat("combat_yell", L.Yell)
 
 mod:RegisterEventsInCombat(
-	"SPELL_AURA_APPLIED 27808 27819 28410",
+	"SPELL_AURA_APPLIED 27808 28410",
 	"SPELL_AURA_REMOVED 28410",
-	"SPELL_CAST_SUCCESS 27810 27819 27808 28410",
+	"SPELL_CAST_SUCCESS 27810 27808 28410",
 	"CHAT_MSG_MONSTER_YELL",
 	"UNIT_HEALTH boss1"
 )
@@ -27,35 +27,27 @@ local warnAddsSoon			= mod:NewAnnounce("warnAddsSoon", 1, "Interface\\Icons\\INV
 local warnPhase2			= mod:NewPhaseAnnounce(2, 3)
 local warnBlastTargets		= mod:NewTargetAnnounce(27808, 2)
 local warnFissure			= mod:NewTargetNoFilterAnnounce(27810, 4)
-local warnMana				= mod:NewTargetAnnounce(27819, 2)
 local warnChainsTargets		= mod:NewTargetNoFilterAnnounce(28410, 4)
 local warnMindControlSoon	= mod:NewSoonAnnounce(28410, 4)
 local warnPhase3			= mod:NewPhaseAnnounce(3, 3)
 
 local specwarnP2Soon		= mod:NewSpecialWarning("specwarnP2Soon")
-local specWarnManaBomb		= mod:NewSpecialWarningMoveAway(27819, nil, nil, nil, 1, 2)
-local specWarnManaBombNear	= mod:NewSpecialWarningClose(27819, nil, nil, nil, 1, 2)
-local yellManaBomb			= mod:NewShortYell(27819)
 local specWarnBlast			= mod:NewSpecialWarningTarget(27808, "Healer", nil, nil, 1, 2)
 local specWarnFissureYou	= mod:NewSpecialWarningYou(27810, nil, nil, nil, 3, 2)
 local specWarnFissureClose	= mod:NewSpecialWarningClose(27810, nil, nil, nil, 2, 8)
 local yellFissure			= mod:NewYellMe(27810)
-local specWarnAddsGuardians	= mod:NewSpecialWarningAdds(29897, "-Healer", nil, nil, 1, 2) -- "Guardians of Icecrown. There's no spellID for this, so used something close: Guardians of Icecrown Passive"
 
 local blastTimer			= mod:NewBuffActiveTimer(4, 27808, nil, nil, nil, 5, nil, DBM_COMMON_L.HEALER_ICON)
-local timerManaBomb			= mod:NewCDTimer(30, 27819, nil, nil, nil, 3)
 local timerFrostBlast		= mod:NewCDTimer(45, 27808, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
 local specWarnFrostBlastSoon = mod:NewSpecialWarningSoon(27808, nil, nil, nil, 2, 2)
 
-local timerFissure			= mod:NewTargetTimer(5, 27810, nil, nil, 2, 3)
-local timerFissureCD 		= mod:NewCDTimer(25, 27810, nil, nil, nil, 3, nil, nil, true) 
+local timerFissure			= mod:NewTargetTimer(5, 27810, nil, nil, 2, 3) -- personal-only: started solely in the args:IsPlayer() branch
 local timerMC				= mod:NewBuffActiveTimer(20, 28410, nil, nil, nil, 3)
 local timerMCCD				= mod:NewCDTimer(90, 28410, nil, nil, nil, 3)
 local timerPhase2			= mod:NewTimer(228, "TimerPhase2", nil, nil, nil, 6)
 
 mod:AddRangeFrameOption(12)
 mod:AddSetIconOption("SetIconOnMC", 28410, true, false, {1, 2, 3})
-mod:AddSetIconOption("SetIconOnManaBomb", 27819, false, false, {8})
 mod:AddSetIconOption("SetIconOnFrostTomb", 27808, true, false, {1, 2, 3, 4, 5, 6, 7, 8})
 mod:AddDropdownOption("RemoveBuffsOnMC", {"Never", "Gift", "CCFree", "ShortOffensiveProcs", "MostOffensiveBuffs"}, "Never", "misc", nil, 28410)
 
@@ -291,9 +283,8 @@ end
 function mod:SPELL_CAST_SUCCESS(args)
 	local spellId = args.spellId
 	if spellId == 27810 then
-		timerFissure:Start(args.destName)
-		timerFissureCD:Start()
 		if args:IsPlayer() then
+			timerFissure:Start(args.destName)
 			specWarnFissureYou:Show()
 			specWarnFissureYou:Play("targetyou")
 			yellFissure:Yell()
@@ -323,8 +314,6 @@ function mod:SPELL_CAST_SUCCESS(args)
 				self:Schedule(90, UnWKT, self)
 			end
 		end
-	elseif spellId == 27819 then
-		timerManaBomb:Start()
 	elseif spellId == 27808 then
 		timerFrostBlast:Start()
 		specWarnFrostBlastSoon:Schedule(38)
@@ -338,20 +327,6 @@ function mod:SPELL_AURA_APPLIED(args)
 		table.insert(frostBlastTargets, args.destName)
 		self:Unschedule(AnnounceBlastTargets)
 		self:Schedule(0.5, AnnounceBlastTargets, self)
-	elseif spellId == 27819 then -- Detonate Mana
-		if self.Options.SetIconOnManaBomb then
-			self:SetIcon(args.destName, 8, 5.5)
-		end
-		if args:IsPlayer() then
-			specWarnManaBomb:Show()
-			specWarnManaBomb:Play("bombrun")
-			yellManaBomb:Yell()
-		elseif self:CheckNearby(12, args.destName) then
-			specWarnManaBombNear:Show(args.destName)
-			specWarnManaBombNear:Play("scatter")
-		else
-			warnMana:Show(args.destName)
-		end
 	elseif spellId == 28410 then -- Chains of Kel'Thuzad
 		chainsTargets[#chainsTargets + 1] = args.destName
 		if self:AntiSpam() then
@@ -397,8 +372,6 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		self:SetStage(3)
 		warnPhase3:Show()
 		timerFrostBlast:AddTime(5.5) --all events delayed by 5.5 seconds on AC
-		timerFissureCD:AddTime(5.5)
-		timerManaBomb:AddTime(5.5)
 		self:Unschedule(specWarnFrostBlastSoon.Show, specWarnFrostBlastSoon)
 		self:Unschedule(specWarnFrostBlastSoon.ScheduleVoice, specWarnFrostBlastSoon)
 		specWarnFrostBlastSoon:Schedule(timerFrostBlast:GetRemaining() - 7)  -- 10s before blast
@@ -408,8 +381,6 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		self:Unschedule(warnMindControlSoon)
 		warnMindControlSoon:Schedule(timerMCCD:GetRemaining() - 5)
 	end
-	elseif msg == L.YellGuardians or msg:find(L.YellGuardians) then
-		specWarnAddsGuardians:Show()
 	end
 end
 

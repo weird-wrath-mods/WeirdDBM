@@ -43,14 +43,6 @@ function mod:OnCombatStart(delay)
 	self:Schedule(30 - delay, Spiderlings, self)
 end
 
-function mod:OnCombatEnd(wipe)
-	if not wipe then
-		if DBT:GetBar(L.ArachnophobiaTimer) then
-			DBT:CancelBar(L.ArachnophobiaTimer)
-		end
-	end
-end
-
 function mod:SPELL_AURA_APPLIED(args)
 	if args.spellId == 28622 then -- Web Wrap
 		warnWebWrap:CombinedShow(0.5, args.destName)

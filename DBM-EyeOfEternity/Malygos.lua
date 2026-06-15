@@ -23,8 +23,7 @@ mod:RegisterEventsInCombat(
 	"CHAT_MSG_RAID_BOSS_WHISPER"
 )
 -- General
-local enrageTimer				= mod:NewBerserkTimer(615)
-local timerAchieve				= mod:NewAchievementTimer(360, 1875)
+local enrageTimer				= mod:NewBerserkTimer(615, nil, nil, nil, false) -- berserk default OFF
 
 -- Stage One
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1))
@@ -146,7 +145,6 @@ end]]
 function mod:OnCombatStart(delay)
 	tableBuild = false
 	enrageTimer:Start(-delay)
-	timerAchieve:Start(-delay)
 	startedPhase1 = false
 	table.wipe(guids)
 	-- Iris pull is resolved once we're in combat; clear tracking for any future re-pull

@@ -18,9 +18,9 @@ local warnDecimateNow	= mod:NewSpellAnnounce(28374, 3)
 
 local specWarnEnrage	= mod:NewSpecialWarningDispel(28371, "RemoveEnrage", nil, nil, 1, 6)
 
-local timerEnrage		= mod:NewBuffActiveTimer(8, 28371, nil, nil, nil, 5, nil, DBM_COMMON_L.ENRAGE_ICON)
+local timerEnrage		= mod:NewBuffActiveTimer(8, 28371, nil, false, nil, 5, nil, DBM_COMMON_L.ENRAGE_ICON) -- default OFF
 local timerDecimate		= mod:NewCDTimer(110, 28374, nil, nil, nil, 2)
-local enrageTimer		= mod:NewBerserkTimer(360)
+local enrageTimer		= mod:NewBerserkTimer(360, nil, nil, nil, false) -- berserk default OFF
 
 local function getDecimateTimer()
 	if mod:IsDifficulty("normal25", "heroic25") or mod:IsHeroic() then

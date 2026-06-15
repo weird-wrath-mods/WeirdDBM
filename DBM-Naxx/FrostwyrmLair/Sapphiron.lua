@@ -12,7 +12,7 @@ mod:SetModelScale(0.1)
 
 mod:RegisterEventsInCombat(
 --	"SPELL_CAST_START 28524",
-	"SPELL_CAST_SUCCESS 28542 55665 28560 55696",
+	"SPELL_CAST_SUCCESS 28542 55665",
 	"SPELL_AURA_APPLIED 28522 28547 55699",
 	"CHAT_MSG_RAID_BOSS_EMOTE",
 	"UNIT_HEALTH"
@@ -23,7 +23,7 @@ mod:RegisterEventsInCombat(
 -- General
 local specWarnLowHP		= mod:NewSpecialWarning("SpecWarnSapphLow")
 
-local berserkTimer		= mod:NewBerserkTimer(900)
+local berserkTimer		= mod:NewBerserkTimer(900, nil, nil, nil, false) -- berserk default OFF
 
 -- Stage One (Ground Phase)
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1))
@@ -31,14 +31,11 @@ local warnDrainLifeNow	= mod:NewSpellAnnounce(28542, 2)
 local warnDrainLifeSoon	= mod:NewSoonAnnounce(28542, 1)
 local warnAirPhaseSoon	= mod:NewAnnounce("WarningAirPhaseSoon", 3, "Interface\\AddOns\\DBM-Core\\textures\\CryptFiendUnBurrow.blp")
 local warnLanded		= mod:NewAnnounce("WarningLanded", 4, "Interface\\AddOns\\DBM-Core\\textures\\CryptFiendBurrow.blp")
-local warnBlizzard		= mod:NewSpellAnnounce(28560, 4)
 
 local specWarnBlizzard	= mod:NewSpecialWarningGTFO(28547, nil, nil, nil, 1, 8)
 
-local timerDrainLife	= mod:NewCDTimer(24, 28542, nil, nil, nil, 3, nil, DBM_COMMON_L.CURSE_ICON) -- (25man Lordaeron 2022/09/02) - 24.0
+local timerDrainLife	= mod:NewCDTimer(24, 28542, nil, "RemoveCurse", nil, 3, nil, DBM_COMMON_L.CURSE_ICON) -- default ON only for curse-dispel classes
 local timerAirPhase		= mod:NewTimer(55, "TimerAir", "Interface\\AddOns\\DBM-Core\\textures\\CryptFiendUnBurrow.blp", nil, nil, 6)
-local timerBlizzard		= mod:NewNextTimer(6.5, 28560, nil, nil, nil, 3)
-local timerTailSweep	= mod:NewNextTimer(10, 55696, nil, nil, nil, 2)
 
 -- Stage Two (Air Phase)
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(2))
@@ -82,8 +79,6 @@ function mod:OnCombatStart(delay)
 	self.vb.isFlying = false
 	warnDrainLifeSoon:Schedule(6.5-delay)
 	timerDrainLife:Start(17-delay)
-	timerBlizzard:Start(17-delay)
-	timerTailSweep:Start(-delay)
 	warnAirPhaseSoon:Schedule(35.74-delay)
 	timerAirPhase:Start(45.74-delay)
 	berserkTimer:Start(-delay)
@@ -150,21 +145,10 @@ end
 --]]
 
 function mod:SPELL_CAST_SUCCESS(args)
-	local spellId = args.spellId
 	if args:IsSpellID(28542, 55665) then -- Life Drain
 		warnDrainLifeNow:Show()
 		warnDrainLifeSoon:Schedule(18.5)
 		timerDrainLife:Start()
-	elseif spellId == 28560 then
-		DBM:AddMsg("Blizzard SPELL_CAST_SUCCESS unhidden from combat log. Notify Fivebuttons on Discord or GitHub")
-		warnBlizzard:Show()
-		if self:IsHeroic() then
-			timerBlizzard:Start(6.5) -- 25-man
-		else
-			timerBlizzard:Start(8) -- 10-man
-		end
-	elseif spellId == 55696 then
-		timerTailSweep:Start()
 	end
 end
 

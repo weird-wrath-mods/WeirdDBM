@@ -13,17 +13,16 @@ mod:RegisterEvents(
 	"SPELL_AURA_APPLIED 29208"
 )
 
-local warnTeleportNow	= mod:NewAnnounce("WarningTeleportNow", 3, 46573, nil, nil, nil, 29216)
-local warnTeleportSoon	= mod:NewAnnounce("WarningTeleportSoon", 1, 46573, nil, nil, nil, 29216)
+local warnTeleportNow	= mod:NewAnnounce("WarningTeleportNow", 3, 55342, nil, nil, nil, 29216)
+local warnTeleportSoon	= mod:NewAnnounce("WarningTeleportSoon", 1, 55342, nil, nil, nil, 29216)
 local warnCurse			= mod:NewSpellAnnounce(29213, 2)
 local warnBlinkSoon		= mod:NewSoonAnnounce(29208, 1)
 local warnBlink			= mod:NewSpellAnnounce(29208, 3)
 
-local specWarnAdds		= mod:NewSpecialWarningAdds(29247, "-Healer", nil, nil, 1, 2)
 
-local timerTeleport		= mod:NewTimer(110, "TimerTeleport", 46573, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 29216)
-local timerTeleportBack	= mod:NewTimer(70, "TimerTeleportBack", 46573, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 29231)
-local timerCurseCD		= mod:NewCDTimer(25, 29213, nil, nil, nil, 5, nil, DBM_COMMON_L.CURSE_ICON)
+local timerTeleport		= mod:NewTimer(110, "TimerTeleport", 55342, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 29216)
+local timerTeleportBack	= mod:NewTimer(70, "TimerTeleportBack", 55342, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 29231)
+local timerCurseCD		= mod:NewCDTimer(25, 29213, nil, "RemoveCurse", nil, 5, nil, DBM_COMMON_L.CURSE_ICON) -- default ON only for curse-dispel classes
 local timerAddsCD		= mod:NewTimer(30, "TimerAdds", "Interface\\Icons\\achievement_character_undead_male", nil, nil, 1)
 local timerBlink		= mod:NewNextTimer(30, 29208)
 
@@ -69,8 +68,6 @@ end
 function mod:OnSync(msg)
 	if not self:IsInCombat() then return end
 	if msg == "Adds" or msg == "AddsTwo" then
-		specWarnAdds:Show()
-		specWarnAdds:Play("killmob")
 		timerAddsCD:Stop()
 		timerAddsCD:Start(30)
 	elseif msg == "Blink" then

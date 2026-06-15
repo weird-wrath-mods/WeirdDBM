@@ -12,8 +12,7 @@ mod:RegisterEventsInCombat(
 	"SPELL_MISSED 28308 41926 59192"
 )
 
-local enrageTimer	= mod:NewBerserkTimer(360)
-local timerAchieve	= mod:NewAchievementTimer(180, 1857)
+local enrageTimer	= mod:NewBerserkTimer(360, nil, nil, nil, false) -- berserk default OFF
 
 mod:AddBoolOption("WarningHateful", false, "announce", nil, nil, nil, 28308)
 
@@ -23,7 +22,6 @@ end
 
 function mod:OnCombatStart(delay)
 	enrageTimer:Start(-delay)
-	timerAchieve:Start(-delay)
 end
 
 function mod:SPELL_DAMAGE(_, _, _, _, destName, _, spellId, _, _, amount)

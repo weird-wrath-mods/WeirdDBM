@@ -25,10 +25,10 @@ local specWarnInjection		= mod:NewSpecialWarningYou(28169, nil, nil, nil, 1, 2)
 local yellInjection			= mod:NewYellMe(28169, nil, false)
 
 local timerInjection		= mod:NewTargetTimer(10, 28169, nil, nil, nil, 3)
-local timerInjectionCD		= mod:NewCDTimer(20, 28169, nil, nil, nil, 3)
+local timerInjectionCD		= mod:NewCDTimer(20, 28169, nil, "RemoveDisease", nil, 3) -- default ON only for disease-dispel classes
 local timerCloud			= mod:NewNextTimer(15, 28240, nil, nil, nil, 5, nil, DBM_COMMON_L.TANK_ICON)
 local timerSlimeSpray		= mod:NewCDTimer(20, 28157, nil, false, nil, 2)
-local enrageTimer			= mod:NewBerserkTimer(720)
+local enrageTimer			= mod:NewBerserkTimer(720, nil, nil, nil, false) -- berserk default OFF
 
 mod:AddSetIconOption("SetIconOnInjectionTarget", 28169, false, false, {1, 2, 3, 4})
 

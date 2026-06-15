@@ -36,7 +36,7 @@ local timerMeteorCD				= mod:NewCDTimer(15, 57467, nil, nil, nil, 3, nil, nil, t
 local timerHolyWrathCD			= mod:NewCDTimer(15, 28883, nil, nil, nil, 3)
 local timerBoneBarrier			= mod:NewTargetTimer(20, 29061, nil, nil, nil, 5)
 
-mod:AddRangeFrameOption("12")
+mod:AddRangeFrameOption("12", nil, false) -- range frame default OFF
 
 mod:SetBossHealthInfo(
 	16064, L.Korthazz,	-- Thane
