@@ -1,9 +1,29 @@
 local mod	= DBM:NewMod("Sartharion", "DBM-ChamberOfAspects", 1)
 local L		= mod:GetLocalizedStrings()
 
+-- Self role from the raid's /maintank /mainassist assignments. MAINTANK = Sartharion ground
+-- tank (frontal Flame Breath), MAINASSIST = drake tank (Shadow Breath, portals, whelps).
+-- GetPartyAssignment works in normal raids (only UnitGroupRolesAssigned is LFG-gated).
+-- Unassigned players, and the RoleFilterByAssignment option being off, fall through to "ALL"
+-- so nobody silently loses warnings.
+local function myAssignment()
+	if not mod.Options.RoleFilterByAssignment then return "ALL" end
+	if GetPartyAssignment("MAINTANK", "player", 1) then return "MT" end
+	if GetPartyAssignment("MAINASSIST", "player", 1) then return "DT" end
+	return "ALL"
+end
+local function seesSarth()	-- Sartharion ground-tank content (Flame Breath)
+	local r = myAssignment()
+	return r == "ALL" or r == "MT"
+end
+local function seesDrake()	-- drake-tank content (Shadow Breath, portals, whelps, fissures)
+	local r = myAssignment()
+	return r == "ALL" or r == "DT"
+end
+
 mod.statTypes = "normal,normal25"
 
-mod:SetRevision("20260604120945")
+mod:SetRevision("20260629000000")
 mod:SetCreatureID(28860)
 mod:SetEncounterID(742)
 
@@ -36,7 +56,9 @@ local specWarnShadronPortal		= mod:NewSpecialWarning("WarningShadronPortal", fal
 local specWarnFissureYou    = mod:NewSpecialWarningYou(59127, nil, nil, nil, 3, 2)
 local specWarnFissureClose  = mod:NewSpecialWarningClose(59127, nil, nil, nil, 2, 8)
 
-local timerShadowFissure		= mod:NewCastTimer(5, 59128, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
+-- Fissure bar defaults off (the announce + personal "you" warnings carry the mechanic);
+-- the constant 5s bar during portal phases is clutter most raids don't want.
+local timerShadowFissure		= mod:NewCastTimer(5, 59128, nil, false, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerBreath 				= mod:NewVarTimer(10, 58956, nil, "Tank|Healer", nil, 5)
 local timerDrakeBreath			= mod:NewVarSourceTimer(17.5, 57570, nil, true, nil, 5)
 -- Each drake's "Power of ..." buff icon, reused on its Shadow Breath bar
@@ -49,6 +71,7 @@ local drakeBreathIcon = {
 -- Start a drake's Shadow Breath bar with its own icon, forced onto the huge bar
 -- regardless of the 17.5s length (which is past the default enlarge threshold).
 local function showDrakeBreath(name, seedTime)
+	if not seesDrake() then return end
 	timerDrakeBreath:Start(seedTime, name)
 	timerDrakeBreath:UpdateIcon(drakeBreathIcon[name], name)
 	local bar = DBT:GetBar(timerDrakeBreath.id .. "\t" .. name)
@@ -70,12 +93,14 @@ local timerShadronPortal  = mod:NewTimer(23, "TimerShadronPortal", 11420)
 local timerVesperonPortal = mod:NewTimer(36, "TimerVesperonPortal", 57988)
 
 mod:AddBoolOption("AnnounceFails", true, "announce")
+mod:AddBoolOption("RoleFilterByAssignment", true)
+mod:AddBoolOption("ShowAllDrakeTimers", false)
 
 mod:GroupSpells(59127, 59128)--Shadow fissure with void blast
 
 local lastvoids = {}
 local lastfire = {}
-local tsort, tinsert, twipe = table.sort, table.insert, table.wipe
+local tsort, tinsert, twipe, tremove = table.sort, table.insert, table.wipe, table.remove
 
 local function isunitdebuffed(spellName)
 	for uId in DBM:GetGroupMembers() do
@@ -87,37 +112,69 @@ local function isunitdebuffed(spellName)
 	return false
 end
 
+-- Each drake's arrival schedule, in the order they fly down. "at" = seconds from pull until
+-- it lands, "warnAt" = when the incoming announce fires (a few seconds before). The drakes
+-- present on this attempt are detected via Sartharion's "Power of ..." buff at pull.
+local drakeArrival = {
+    [L.NameTenebron] = { buff = 61248, timer = timerTenebron, warn = warnTenebron, at = 28,  warnAt = 25,  hpId = 30452 },
+    [L.NameShadron]  = { buff = 58105, timer = timerShadron,  warn = warnShadron,  at = 68,  warnAt = 62,  hpId = 30451 },
+    [L.NameVesperon] = { buff = 61251, timer = timerVesperon, warn = warnVesperon, at = 122, warnAt = 115, hpId = 30449 },
+}
+local drakeArrivalOrder = { L.NameTenebron, L.NameShadron, L.NameVesperon }
+local pendingDrakes = {}
+
+-- First (or all, in show-all mode) drake shown at pull: same schedule as before, started
+-- "delay" seconds ago to account for the post-pull detection window.
+local function revealDrakeArrival(name, delay)
+    local d = drakeArrival[name]
+    d.timer:Start(-delay)
+    d.warn:Schedule(d.warnAt - delay)
+end
+
+-- A later drake revealed only once its predecessor lands (show-next mode): its bar shows the
+-- gap between the two arrivals, since drakes fly down on a fixed schedule from pull.
+local function revealDrakeNext(name, prevName)
+    local d, p = drakeArrival[name], drakeArrival[prevName]
+    local delta = d.at - p.at
+    d.timer:Start(delta)
+    local warnIn = delta - (d.at - d.warnAt)
+    if warnIn > 0 then d.warn:Schedule(warnIn) else d.warn:Show() end
+end
+
+-- On a drake landing, drop it from the queue and, in show-next mode, surface the next one.
+local function advanceDrakes(self, landedName)
+    local idx
+    for i, n in ipairs(pendingDrakes) do
+        if n == landedName then idx = i break end
+    end
+    if not idx then return end
+    tremove(pendingDrakes, idx)
+    if self.Options.ShowAllDrakeTimers then return end  -- all timers already up
+    local nxt = pendingDrakes[1]
+    if nxt then revealDrakeNext(nxt, landedName) end
+end
+
 local function CheckDrakes(self, delay)
     if self.Options.HealthFrame then
         DBM.BossHealth:Show(L.name)
         DBM.BossHealth:AddBoss(28860, "Sartharion")
     end
-    if isunitdebuffed(DBM:GetSpellInfo(61248)) then    -- Power of Tenebron
-        timerTenebron:Start(-delay)
-        warnTenebron:Schedule(25-delay)
---        timerTenebronWhelps:Start(-delay)
---        warnTenebronWhelpsSoon:Schedule(-delay)
-        if self.Options.HealthFrame then
-            DBM.BossHealth:AddBoss(30452, "Tenebron")
+    twipe(pendingDrakes)
+    for _, name in ipairs(drakeArrivalOrder) do
+        local d = drakeArrival[name]
+        if isunitdebuffed(DBM:GetSpellInfo(d.buff)) then
+            tinsert(pendingDrakes, name)
+            if self.Options.HealthFrame then
+                DBM.BossHealth:AddBoss(d.hpId, name)
+            end
         end
     end
-    if isunitdebuffed(DBM:GetSpellInfo(58105)) then    -- Power of Shadron
-        timerShadron:Start(-delay)
-        warnShadron:Schedule(62-delay)
---        timerShadronPortal:Start(-delay)
---        warnShadronPortalSoon:Schedule(-delay)
-        if self.Options.HealthFrame then
-            DBM.BossHealth:AddBoss(30451, "Shadron")
+    if self.Options.ShowAllDrakeTimers then
+        for _, name in ipairs(pendingDrakes) do
+            revealDrakeArrival(name, delay)
         end
-    end
-    if isunitdebuffed(DBM:GetSpellInfo(61251)) then    -- Power of Vesperon
-        timerVesperon:Start(-delay)
-        warnVesperon:Schedule(115-delay)
---        timerVesperonPortal:Start(-delay)
---        warnVesperonPortalSoon:Schedule(-delay)
-        if self.Options.HealthFrame then
-            DBM.BossHealth:AddBoss(30449, "Vesperon")
-        end
+    elseif pendingDrakes[1] then
+        revealDrakeArrival(pendingDrakes[1], delay)
     end
 end
 
@@ -133,8 +190,10 @@ function mod:OnCombatStart(delay)
 	--Cache spellnames so a solo player check doesn't fail in CheckDrakes in 8.0+
 	self:Schedule(5, CheckDrakes, self, delay)
 	timerWall:Start(20-delay)
-	warnBreathSoon:Schedule(5-delay)
-	timerBreath:Start(8-delay)
+	if seesSarth() then
+		warnBreathSoon:Schedule(5-delay)
+		timerBreath:Start(8-delay)
+	end
 
 	twipe(lastvoids)
 	twipe(lastfire)
@@ -168,6 +227,7 @@ end
 
 -- Fires at the moment the breath lands (cast start + ~2s cast); restarts the 10s "next breath" bar so its zero is the hit.
 local function startBreathTimer()
+	if not seesSarth() then return end
 	timerBreath:Start()
 	warnBreathSoon:Schedule(7)
 end
@@ -224,8 +284,10 @@ function mod:CHAT_MSG_MONSTER_YELL(msg, mob)
     or (mob == L.NameShadron and L.YellShadronAggro and msg:find(L.YellShadronAggro, 1, true))
     or (mob == L.NameVesperon and L.YellVesperonAggro and msg:find(L.YellVesperonAggro, 1, true)) then
         showDrakeBreath(mob, 10)
+        advanceDrakes(self, mob)  -- arrival queue is shared, runs regardless of role
         return
     end
+    if not seesDrake() then return end  -- whelps/portals are drake-tank concerns
     if mob == L.NameTenebron and L.YellTenebronLand and msg:find(L.YellTenebronLand, 1, true) then
         timerTenebronWhelps:Start(51)       -- 22s Portal + 2s Eggs + 25s Hatch
         warnTenebronWhelpsSoon:Schedule(46)
@@ -250,6 +312,7 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg, mob)
             self:SendSync("ShadronPortal")
         end
     elseif L.TenebronHatch and msg:find(L.TenebronHatch, 1, true) then
+        if not seesDrake() then return end  -- whelps are a drake-tank concern
         timerTenebronWhelps:Start(27)
         warnTenebronWhelpsSoon:Schedule(23)
     end
@@ -260,6 +323,8 @@ function mod:OnSync(event)
 		timerWall:Start()
 		specWarnFireWall:Show()
 		specWarnFireWall:Play("watchwave")
+	elseif not seesDrake() then  -- portals below are drake-tank concerns
+		return
 	elseif event == "VesperonPortal" then
 		specWarnVesperonPortal:Show()
 		specWarnVesperonPortal:Play("newportal")

@@ -91,7 +91,9 @@ L:SetOptionLocalization({
 	WarningReflectSoon		= "Announce Vesperon Reflect soon",
 	WarningTenebronPortal	= "Show special warning for Tenebron's portal",
 	WarningShadronPortal	= "Show special warning for Shadron's portal",
-	WarningVesperonPortal	= "Show special warning for Vesperon's portal"
+	WarningVesperonPortal	= "Show special warning for Vesperon's portal",
+	RoleFilterByAssignment	= "Only show warnings for your assigned role: Main Tank sees Flame Breath, Main Assist (drake tank) sees Shadow Breath/portals/whelps. Unassigned players and this option being off = see everything",
+	ShowAllDrakeTimers		= "Show arrival timers for all drakes at once. Off (default) shows only the next drake to come down, revealing the one after it as each lands"
 })
 
 L:SetMiscLocalization({
