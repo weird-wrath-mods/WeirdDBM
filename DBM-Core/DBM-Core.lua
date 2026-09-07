@@ -380,7 +380,7 @@ DBM.DefaultOptions = {
 	PlayTTCountdown = false,
 	PlayTTCountdownFinished = false,
 	EnableBB = true,
-	PlayBBLoot = true,
+	PlayBBLoot = false,
 	PlayBBSound = false,
 	OverrideBBFont = false,
 	BBFont = "standardFont",
@@ -2938,6 +2938,13 @@ do
 			end
 		end
 		--]]
+		-- One-time push of the Boss Banner loot-animation default to off for installs that
+		-- predate the default change (their saved PlayBBLoot is still the old true). Stamped so a
+		-- later manual re-enable in the GUI is not clobbered on every login.
+		if not self.Options.WeirdPlayBBLootDefaultApplied then
+			self.Options.PlayBBLoot = false
+			self.Options.WeirdPlayBBLootDefaultApplied = true
+		end
 		DBM_CharSavedRevision = self.Revision
 		-- load special warning options
 		self:UpdateWarningOptions()
