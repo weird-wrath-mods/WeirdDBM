@@ -42,7 +42,8 @@ local specWarnLightningWhirl	= mod:NewSpecialWarningInterrupt(63483, "HasInterru
 local timerOverload				= mod:NewCastTimer(6, 63481, nil, nil, nil, 2, nil, DBM_COMMON_L.IMPORTANT_ICON)
 local timerOverloadCD			= mod:NewCDTimer("v25-40", 63481, nil, nil, nil, 2, nil, DBM_COMMON_L.IMPORTANT_ICON, nil, 1) --25-40s variance on AC
 local timerLightningWhirl		= mod:NewCastTimer(5, 63483, nil, nil, nil, 4, nil, DBM_COMMON_L.INTERRUPT_ICON)
-local timerLightningWhirlCD		= mod:NewCDTimer(32, 63483)
+local timerLightningWhirlFirst	= mod:NewNextTimer("v20-40", 63483, nil, nil, nil, 4, nil, DBM_COMMON_L.INTERRUPT_ICON)	-- AC: scheduled 20-40s when Brundir enters phase 2 (first council death)
+local timerLightningWhirlCD		= mod:NewCDTimer("v10-25", 63483, nil, false, nil, 4, nil, DBM_COMMON_L.INTERRUPT_ICON)	-- AC: repeats 10-25s cast-to-cast; too wide a window to be useful, default OFF
 local timerLightningTendrils	= mod:NewBuffActiveTimer(35, 63486, nil, nil, nil, 6)
 mod:AddBoolOption("AlwaysWarnOnOverload", false, "announce", nil, nil, nil, 63481)
 
@@ -218,6 +219,7 @@ function mod:SPELL_AURA_APPLIED(args)
 		self:Schedule(0.3, warnStaticDisruptionTargets, self)
 	elseif args:IsSpellID(63483, 61915) then	-- Lightning Whirl
 		timerLightningWhirl:Start()
+		timerLightningWhirlFirst:Stop()
 		timerLightningWhirlCD:Start()
 		if self:CheckInterruptFilter(args.destGUID, false, true) then
 			specWarnLightningWhirl:Show(args.destName)
@@ -253,7 +255,7 @@ function mod:UNIT_DIED(args)
 		if runemasterAlive and brundirAlive then
 			timerRuneofDeath:Start(35)
 			warnRuneofDeathIn10Sec:Schedule(20)
-			timerLightningWhirlCD:Start()
+			timerLightningWhirlFirst:Start()
 		elseif runemasterAlive then
 			timerRuneofSummoning:Start(25)
 		end
@@ -261,7 +263,7 @@ function mod:UNIT_DIED(args)
 	elseif cid == 32927 then	--Runemaster Molgeim
 		runemasterAlive = false
 		if brundirAlive and steelbreakerAlive then
-			timerLightningWhirlCD:Start()
+			timerLightningWhirlFirst:Start()
 		end
 		timerRuneofDeath:Cancel()
 		warnRuneofDeathIn10Sec:Cancel()
@@ -279,6 +281,8 @@ function mod:UNIT_DIED(args)
 		timerOverload:Cancel()
 		timerOverloadCD:Cancel()
 		timerLightningWhirl:Cancel()
+		timerLightningWhirlFirst:Cancel()
+		timerLightningWhirlCD:Cancel()
 	end
 end
 

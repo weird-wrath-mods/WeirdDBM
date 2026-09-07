@@ -2436,7 +2436,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 3
+local WEIRD_DEFAULT_REV = 4
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2457,6 +2457,10 @@ local weirdDefaultMigrations = {
 	[3] = {
 		-- Sapphiron "Life Drain soon" pre-warn default OFF for everyone (the Life Drain "now" alert stays dispel-gated)
 		Sapphiron = {"announce28542soon"},
+	},
+	[4] = {
+		-- Iron Council Lightning Whirl repeat CD default OFF (AC window is 10-25s, too variable); the first-cast interval timer stays ON
+		IronCouncil = {"Timer63483cd"},
 	},
 }
 
