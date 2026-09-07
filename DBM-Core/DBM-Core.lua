@@ -84,7 +84,7 @@ end
 DBM = {
 	Revision = parseCurseDate("20260416000000"),
 	DisplayVersion = GetAddOnMetadata("DBM-Core", "Version") or "<unknown version>", -- read from the TOC ## Version (single source of truth)
-	ReleaseRevision = releaseDate(2026, 04, 16) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
+	ReleaseRevision = releaseDate(2026, 09, 07) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
 }
 
 local fakeBWVersion = 7558
