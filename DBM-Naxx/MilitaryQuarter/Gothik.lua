@@ -17,6 +17,7 @@ local warnGateOpen		= mod:NewSpellAnnounce(3366, 2)
 local warnPhase2		= mod:NewPhaseAnnounce(2, 3)
 
 local timerPhase2		= mod:NewTimer(274.33, "TimerPhase2", 27082, nil, nil, 6)
+local timerWave			= mod:NewTimer(30, "TimerWave", 5502, nil, nil, 1)
 local timerGate			= mod:NewTimer(120, "Gate Opens", 9484)
 local timerTeleport		= mod:NewCDTimer(20, 46573, "TimerTeleport", nil, nil, 3)
 local specWarnLowHP		= mod:NewSpecialWarning("SpecWarnGothLow")
@@ -35,6 +36,7 @@ function mod:OnCombatStart()
 	self.vb.lowHealthWarned = false
 	timerGate:Start()
 	timerPhase2:Start()
+	timerWave:Start(30, 1)
 end
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
