@@ -1,7 +1,7 @@
 local mod	= DBM:NewMod("Thorim", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20260607220131")
+mod:SetRevision("20260823220131")
 mod:SetCreatureID(32865)
 mod:SetEncounterID(752)
 mod:SetUsedIcons(7)
@@ -58,7 +58,7 @@ local specWarnHardModeActivated		= mod:NewSpecialWarning("specWarnHardmode", nil
 local specWarnHardModeFailed		= mod:NewSpecialWarningEnd(62507, nil, nil, nil, 1, 2)
 
 local timerHardmode					= mod:NewTimer(150, "TimerHardmode", "Interface\\Icons\\achievement_boss_thorim", nil, nil, 0, nil, nil, nil, nil, nil, nil, nil, "at3183") -- 25 man NM log review (2022/07/10), 2:30 from 62507 SPELL_AURA_APPLIED to SPELL_AURA_REMOVED
-local timerFrostNova				= mod:NewNextTimer(20, 62605, nil, nil, nil, 2, nil, DBM_COMMON_L.MAGIC_ICON)
+local timerFrostNova				= mod:NewCDTimer(25, 62605, nil, nil, nil, 2, nil, DBM_COMMON_L.MAGIC_ICON)
 local timerFrostNovaCast			= mod:NewCastTimer(2.5, 62605, nil, nil, nil, 2, nil, DBM_COMMON_L.MAGIC_ICON)
 local timerFBVolley					= mod:NewCDTimer(13, 62604) --13s on AC
 
@@ -111,6 +111,9 @@ function mod:SPELL_CAST_START(args)
 	elseif args:IsSpellID(62597, 62605) then	-- Frost Nova by Sif
 		timerFrostNovaCast:Start()
 		timerFrostNova:Start()
+		if self:AntiSpam(5, 2) then
+			timerFBVolley:AddTime(5) --Frostnova delays volley by 5s on AC
+		end
 	elseif args:IsSpellID(64390, 62131) then	-- Chain Lightning by Thorim
 		timerChainLightning:Start()
 	end

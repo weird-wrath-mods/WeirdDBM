@@ -1,7 +1,7 @@
 local mod	= DBM:NewMod("YoggSaron", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20260507220131")
+mod:SetRevision("20268317220131")
 mod:SetCreatureID(33288)
 mod:SetEncounterID(756)
 mod:RegisterCombat("combat_yell", L.YellPull)
@@ -111,7 +111,7 @@ local warnP3						= mod:NewPhaseAnnounce(3, 2, nil, nil, nil, nil, nil, 2)
 local specWarnLunaticGaze			= mod:NewSpecialWarningLookAway(64163, nil, nil, nil, 1, 2)
 
 local timerLunaticGaze				= mod:NewCastTimer(4, 64163, nil, nil, nil, 2, nil, DBM_COMMON_L.IMPORTANT_ICON) -- Yogg-Saron's Gaze
-local timerNextLunaticGaze			= mod:NewCDTimer(8, 64163, nil, nil, nil, 2, nil, DBM_COMMON_L.IMPORTANT_ICON) -- Yogg-Saron's Gaze, Log reviewed (25 man NM  2022/07/10) - [cast_success: apply 4s cast time correction factor] 12.0, 12.0, 12.1, 12.1, 12.0, 12.0
+local timerNextLunaticGaze			= mod:NewCDTimer("v8-18", 64163, nil, nil, nil, 2, nil, DBM_COMMON_L.IMPORTANT_ICON) -- 13-22 on AC = from aura-removed 9–18s
 
 mod:AddSetIconOption("SetIconOnBeacon", 64465, true, true, {1, 2, 3, 4, 5, 6, 7, 8})
 
@@ -119,7 +119,7 @@ mod:AddSetIconOption("SetIconOnBeacon", 64465, true, true, {1, 2, 3, 4, 5, 6, 7,
 -- mod:AddTimerLine(L.ImmortalGuardian)
 local warnEmpowerSoon				= mod:NewSoonAnnounce(64486, 4)
 
-local timerEmpower					= mod:NewCDTimer(46.0, 64486, nil, nil, nil, 3) -- REVIEW! variance 45-50? (S3 HM log 2022/07/21) - 46.0, 46.0, 47.4, 48.2
+local timerEmpower					= mod:NewCDTimer(45.0, 64486, nil, nil, nil, 3) -- 45s on AC
 local timerEmpowerDuration			= mod:NewBuffActiveTimer(10, 64486, nil, nil, nil, 3)
 
 mod:GroupSpells(64486, 64465) -- Empowering Shadows, Shadow Beacon
@@ -133,7 +133,7 @@ local warnDeafeningRoarSoon			= mod:NewPreWarnAnnounce(64189, 5, 3)
 local specWarnDeafeningRoar			= mod:NewSpecialWarningSpell(64189, nil, nil, nil, 1, 2)
 
 local timerCastDeafeningRoar		= mod:NewCastTimer(2.3, 64189, nil, nil, nil, 2)
-local timerNextDeafeningRoar		= mod:NewNextTimer(50, 64189, nil, nil, nil, 2) -- 50s on AC
+local timerNextDeafeningRoar		= mod:NewNextTimer(60, 64189, nil, nil, nil, 2) -- 60s on AC
 
 local targetWarningsShown = {}
 local brainLinkTargets = {}
@@ -195,7 +195,7 @@ function mod:SPELL_CAST_START(args)
 		specWarnMadnessOutNow:Schedule(55) -- TO DO: implement brain room check?
 	elseif spellId == 64189 then		--Deafening Roar
 		timerNextDeafeningRoar:Start()
-		warnDeafeningRoarSoon:Schedule(53)
+		warnDeafeningRoarSoon:Schedule(55)
 		timerCastDeafeningRoar:Start()
 		specWarnDeafeningRoar:Show()
 		specWarnDeafeningRoar:Play("silencesoon")
@@ -292,12 +292,11 @@ function mod:SPELL_AURA_APPLIED(args)
 			specWarnFervor:Play("targetyou")
 		end
 	elseif args:IsSpellID(63894, 64775) and self.vb.phase < 2 then	-- Shadowy Barrier of Yogg-Saron (this is happens when p2 starts, ~1s after IEEU, so correction factor is needed). Bugged on Warmane, 63894 is never applied (only removed), instead 64775 is applied to Sara
-		-- "<114.74 19:51:51> [CLEU] SPELL_AURA_APPLIED:0xF13000816E0007D4:Sara:0xF13000816E0007D4:Sara:64775:Shadowy Barrier:BUFF:nil:", -- [5432]
 		self:SetStage(2)
-		timerMaladyCD:Start(17.8)	-- (25 man NM log 2022/07/10 || S3 HM log 2022/07/21) - 18 || 18.0 ; 17.9 ; 17.8
-		timerBrainLinkCD:Start(23)	-- (25 man NM log 2022/07/10 || S3 HM log 2022/07/21) - 23 || 23.0 ; 23.0
-		timerBrainPortal:Start(59)	-- (25 man NM log 2022/07/10 || S3 HM log 2022/07/21) - 59 || 59.8 ; 59.7 ; 59.5
-		warnBrainPortalSoon:Schedule(49)
+		timerMaladyCD:Start(12)	-- 12s AC
+		timerBrainLinkCD:Start(18)	--  18s AC
+		timerBrainPortal:Start(60)	-- 60s AC
+		warnBrainPortalSoon:Schedule(50)
 		specWarnBrainPortalSoon:Schedule(56)
 		warnP2:Show()
 		warnP2:Play("ptwo")
@@ -339,6 +338,7 @@ function mod:SPELL_AURA_REMOVED(args)
 		if self.Options.SetIconOnBeacon then
 			self:ScanForMobs(args.destGUID, 2, 0, 1, nil, 6, "SetIconOnBeacon", true, nil, nil, true)
 		end
+		self.vb.beaconIcon = 8
 	end
 end
 
@@ -381,8 +381,8 @@ function mod:OnSync(msg)
 		warnP3:Show()
 		warnP3:Play("pthree")
 		warnEmpowerSoon:Schedule(40)
-		timerNextDeafeningRoar:Start(20) -- Has variance (S2 VOD || S3 VOD 2022/07/15 || S3 HM log 2022/07/21) - 21 || 22, 21.5, 20.6, 22.1, 20.0, 28, 28 || 28.1, 22.6
-		warnDeafeningRoarSoon:Schedule(15)
-		timerNextLunaticGaze:Start(12) -- S3 VOD review
+		timerNextDeafeningRoar:Start(30) -- 30s AC
+		warnDeafeningRoarSoon:Schedule(25)
+		timerNextLunaticGaze:Start(7) -- 7s AC
 	end
 end
