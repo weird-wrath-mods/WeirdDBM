@@ -180,6 +180,7 @@ DBM.DefaultOptions = {
 	StripServerName = true,
 	ShowAllVersions = true,
 	ShowReminders = true,
+	RemindTankAssignments = true,
 	ShowPizzaMessage = true,
 	ShowEngageMessage = true,
 	ShowDefeatMessage = true,
@@ -5009,6 +5010,36 @@ do
 		["heroic25"] = "heroic25",
 	}
 
+	-- Leadership reminder: at any raid pull, nag promoted players if the raid is missing a
+	-- Main Tank and/or Main Assist assignment. Mods like Sartharion split tank vs off-tank
+	-- warnings off these assignments, so leaving them unset silently disables that split.
+	local reminderMod
+	function DBM:RemindTankAssignments()
+		if not self.Options.RemindTankAssignments then return end
+		if LastInstanceType ~= "raid" then return end
+		local numRaid = GetNumRaidMembers()
+		if numRaid == 0 then return end
+		if self:GetRaidRank() < 1 then return end  -- only those who can set assignments
+		local hasMT, hasMA
+		for i = 1, numRaid do
+			local u = "raid"..i
+			if GetPartyAssignment("MAINTANK", u, 1) then hasMT = true end
+			if GetPartyAssignment("MAINASSIST", u, 1) then hasMA = true end
+			if hasMT and hasMA then return end
+		end
+		if not reminderMod then
+			reminderMod = self:NewMod("TankAssignmentReminder")
+			reminderMod.text = reminderMod:NewSpecialWarning("  %s  ", nil, nil, nil, 3, 2)
+		end
+		if not hasMT and not hasMA then
+			reminderMod.text:Show(L.REMIND_TANKS_BOTH)
+		elseif not hasMT then
+			reminderMod.text:Show(L.REMIND_TANKS_MT)
+		else
+			reminderMod.text:Show(L.REMIND_TANKS_MA)
+		end
+	end
+
 	function DBM:StartCombat(mod, delay, event, synced, syncedStartHp, syncedEvent)
 		cSyncSender = {}
 		cSyncReceived = 0
@@ -5114,6 +5145,7 @@ do
 				end
 			end
 			fireEvent("DBM_Pull", mod, delay, synced, startHp)
+			self:RemindTankAssignments()
 			self:FlashClientIcon()
 			--serperate timer recovery and normal start.
 			if event ~= "TIMER_RECOVERY" then

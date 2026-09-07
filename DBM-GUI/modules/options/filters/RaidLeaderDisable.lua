@@ -1,6 +1,9 @@
 local L = DBM_GUI_L
 local rlControlsPanel = DBM_GUI.Cat_Filters:CreateNewPanel(L.Tab_RLControls, "option")
 
+local raidSetupArea = rlControlsPanel:CreateArea(L.Area_RaidSetupReminders)
+raidSetupArea:CreateCheckButton(L.RemindTankAssignments, true, nil, "RemindTankAssignments")
+
 local featureOverridesArea = rlControlsPanel:CreateArea(L.Area_FeatureOverrides)
 featureOverridesArea:CreateCheckButton(L.OverrideIcons, true, nil, "DisableRaidIcons")
 featureOverridesArea:CreateCheckButton(L.OverrideSay, true, nil, "DisableChatBubbles")

@@ -524,6 +524,8 @@ L.RaidCombat						= "Disable in combat (bosses only)"
 
 -- Panel: Raid Leader Controls
 L.Tab_RLControls					= "Raid Leader Controls"
+L.Area_RaidSetupReminders			= "Raid Setup Reminders"
+L.RemindTankAssignments				= "At each raid pull, remind promoted players if no Main Tank and/or Main Assist is assigned (some mods split tank vs off-tank warnings off these assignments)"
 L.Area_FeatureOverrides				= "Feature Override Options"
 L.OverrideIcons 					= "Disable icon marking for all users in raid, including your own (Use override instead of disable if you want DBM to do marking under your terms)"
 L.OverrideSay						= "Disable chat bubble/SAY messages for all users in the raid, including your own"

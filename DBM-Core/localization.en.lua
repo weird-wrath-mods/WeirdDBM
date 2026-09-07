@@ -309,6 +309,10 @@ L.ANNOUNCE_PULL_TARGET					= "Pulling %s in %d sec. (Sent by %s)"
 L.ANNOUNCE_PULL_NOW_TARGET				= "Pulling %s now!"
 L.GEAR_WARNING							= "Warning: Check gear. Your equipped ilvl is %d lower than bag ilvl"
 L.GEAR_WARNING_WEAPON					= "Warning: Check if your weapon is correctly equipped."
+
+L.REMIND_TANKS_BOTH						= "Assign Main Tank AND Main Assist!"
+L.REMIND_TANKS_MT						= "No Main Tank assigned!"
+L.REMIND_TANKS_MA						= "No Main Assist assigned!"
 L.GEAR_FISHING_POLE						= "Fishing Pole"
 
 L.ACHIEVEMENT_TIMER_SPEED_KILL			= "Speed Kill"
