@@ -26,7 +26,7 @@ mod:SetBossHealthInfo(
 )
 
 -- General
-local enrageTimer				= mod:NewBerserkTimer(900)
+local enrageTimer				= mod:NewBerserkTimer(900, nil, nil, nil, false) -- berserk default OFF
 
 mod:AddRangeFrameOption(20, nil, true)
 

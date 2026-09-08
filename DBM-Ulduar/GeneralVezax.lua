@@ -33,7 +33,7 @@ local yellMarkoftheFaceless			= mod:NewYell(63276)
 local specWarnMarkoftheFacelessNear	= mod:NewSpecialWarningClose(63276, nil, nil, 2, 1, 2)
 local specWarnSearingFlames			= mod:NewSpecialWarningInterruptCount(62661, "HasInterrupt", nil, nil, 1, 2)
 
-local timerEnrage					= mod:NewBerserkTimer(600)
+local timerEnrage					= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 local timerSearingFlamesCast		= mod:NewCastTimer(2, 62661, nil, nil, nil, 5, nil, DBM_COMMON_L.INTERRUPT_ICON)
 local timerSurgeofDarkness			= mod:NewBuffActiveTimer(10, 62662, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON)
 local timerNextSurgeofDarkness		= mod:NewCDTimer(63, 62662, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON) -- 63s on AC

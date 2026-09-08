@@ -20,8 +20,8 @@ mod:RegisterEventsInCombat(
 )
 
 -- General
-local enrageTimerStage1				= mod:NewBerserkTimer(300, nil, DBM_CORE_L.GENERIC_TIMER_BERSERK..": "..DBM_CORE_L.SCENARIO_STAGE:format(1)) -- REVIEW! Need log to validate, only used Wowhead as reference
-local enrageTimerStage2				= mod:NewBerserkTimer(300, nil, DBM_CORE_L.GENERIC_TIMER_BERSERK..": "..DBM_CORE_L.SCENARIO_STAGE:format(2)) -- REVIEW! Need log to validate, only used Wowhead as reference
+local enrageTimerStage1				= mod:NewBerserkTimer(300, nil, DBM_CORE_L.GENERIC_TIMER_BERSERK..": "..DBM_CORE_L.SCENARIO_STAGE:format(1), nil, false) -- berserk default OFF
+local enrageTimerStage2				= mod:NewBerserkTimer(300, nil, DBM_CORE_L.GENERIC_TIMER_BERSERK..": "..DBM_CORE_L.SCENARIO_STAGE:format(2), nil, false) -- berserk default OFF
 mod:AddRangeFrameOption("10")
 
 -- Stage One

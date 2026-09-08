@@ -25,7 +25,7 @@ local specWarnBlast		= mod:NewSpecialWarningInterrupt(64389, "HasInterrupt", nil
 local specWarnVoid		= mod:NewSpecialWarningMove(64675, nil, nil, nil, 1, 2)
 local specWarnSonic		= mod:NewSpecialWarningMoveTo(64688, nil, nil, nil, 2, 2)
 
-local enrageTimer		= mod:NewBerserkTimer(600)
+local enrageTimer		= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 local timerDefender		= mod:NewNextCountTimer(25, 64447, nil, nil, nil, 1) -- 25s on AC
 local timerFear			= mod:NewCastTimer(64386, nil, nil, nil, 4)
 local timerFearCD		= mod:NewCDTimer(35, 64386, nil, nil, nil, 4, nil, nil, nil) -- 35s on AC

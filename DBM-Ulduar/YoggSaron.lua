@@ -19,7 +19,7 @@ mod:RegisterEventsInCombat(
 )
 
 --General
-local enrageTimer					= mod:NewBerserkTimer(900)
+local enrageTimer					= mod:NewBerserkTimer(900, nil, nil, nil, false) -- berserk default OFF
 local timerAchieve					= mod:NewAchievementTimer(420, 3012)
 
 -- I have hidden most NPC TimerLines and only kept stage and brain TimerLines to prevent GUI clutter.

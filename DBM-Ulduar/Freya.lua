@@ -33,7 +33,7 @@ mod:RegisterEventsInCombat(
 -- General
 local warnSimulKill				= mod:NewAnnounce("WarnSimulKill", 1)
 
-local timerEnrage				= mod:NewBerserkTimer(600)
+local timerEnrage				= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 
 -- Stage One
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1))

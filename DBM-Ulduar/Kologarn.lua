@@ -27,7 +27,7 @@ mod:SetBossHealthInfo(
 )
 
 -- General
-local enrageTimer				= mod:NewBerserkTimer(600)
+local enrageTimer				= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 local timerTimeForDisarmed		= mod:NewTimer(10, "achievementDisarmed")	-- 10 HC / 12 nonHC
 
 --NOTE: Two crunch armors are setup to appear in gui twice on purpose, because they are very different mechanically. One is meant to be ignored and one is meant to be tank swap

@@ -17,7 +17,7 @@ mod:RegisterEventsInCombat(
 )
 
 -- General
-local enrageTimer					= mod:NewBerserkTimer(600)
+local enrageTimer					= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 local timerAchieve					= mod:NewAchievementTimer(205, 2937)
 
 mod:AddRangeFrameOption(12, nil, true)

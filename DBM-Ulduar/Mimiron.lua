@@ -31,7 +31,7 @@ mod:RegisterEventsInCombat(
 )
 
 --General
-local timerEnrage					= mod:NewBerserkTimer(900)
+local timerEnrage					= mod:NewBerserkTimer(900, nil, nil, nil, false) -- berserk default OFF
 local timerP1toP2					= mod:NewTimer(42.75, "TimeToPhase2", nil, nil, nil, 6)
 local timerP2toP3					= mod:NewTimer(17, "TimeToPhase3", nil, nil, nil, 6)
 local timerP3toP4					= mod:NewTimer(26.8, "TimeToPhase4", nil, nil, nil, 6)
