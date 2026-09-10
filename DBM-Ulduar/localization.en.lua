@@ -52,32 +52,22 @@ L:SetGeneralLocalization({
 })
 
 L:SetWarningLocalization({
-	warnTurretsReadySoon		= "Last turret ready in 20 seconds",
-	warnTurretsReady			= "Last turret ready"
+	warnTurretsReady			= "Harpoon turret ready"
 })
 
 L:SetTimerLocalization({
-	timerTurret1	= "Turret 1",
-	timerTurret2	= "Turret 2",
-	timerTurret3	= "Turret 3",
-	timerTurret4	= "Turret 4",
 	timerGrounded	= "On the ground"
 })
 
 L:SetOptionLocalization({
-	warnTurretsReadySoon		= "Show pre-warning for turrets",
-	warnTurretsReady			= "Show warning for turrets",
-	timerTurret1				= "Show timer for turret 1",
-	timerTurret2				= "Show timer for turret 2",
-	timerTurret3				= "Show timer for turret 3 (25 player)",
-	timerTurret4				= "Show timer for turret 4 (25 player)",
+	warnTurretsReady			= "Announce each harpoon turret as the engineers finish it",
 	timerGrounded				= "Show timer for ground phase duration"
 })
 
 L:SetMiscLocalization({
 	YellAir				= "Give us a moment to prepare to build the turrets.",
-	YellAir2			= "Fires out! Let's rebuild those turrets!",
 	YellGround			= "Move quickly! She won't remain grounded for long!",
+	EmoteHarpoonReady	= "Harpoon Turret is ready for use!",
 	EmotePhase2			= "%s is grounded permanently!"
 })
 
