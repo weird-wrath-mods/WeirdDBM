@@ -83,7 +83,7 @@ local timerSelfRepair				= mod:NewCastSourceTimer(15, 64383, nil, nil, nil, 7, n
 mod:AddTimerLine(DBM_COMMON_L.HEROIC_ICON..DBM_CORE_L.HARD_MODE)
 local warnFlamesSoon				= mod:NewSoonAnnounce(64566, 1)
 
-local timerHardmode					= mod:NewTimer(600, "TimerHardmode", 64582, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 64582) -- AC: 10min (25) / 8min (10)
+local timerHardmode					= mod:NewTimer(600, "TimerHardmode", 64582, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 64582) -- AC: 10min on both raid sizes
 local timerNextFlames				= mod:NewNextTimer(30, 64566, nil, nil, nil, 7, nil, DBM_COMMON_L.IMPORTANT_ICON, nil, 1, 5)
 
 -- Stage One
