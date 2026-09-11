@@ -23,6 +23,7 @@ local enrageTimer					= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berser
 
 -- Stage One
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1))
+local warnTurretsReadySoon			= mod:NewAnnounce("warnTurretsReadySoon", 1, 48642)
 local warnTurretsReady				= mod:NewAnnounce("warnTurretsReady", 3, 48642)
 local warnDevouringFlame			= mod:NewTargetAnnounce(63236, 2, nil, false) -- Very spammy, requires turning on AND disabling target filter. Power user setting.
 
@@ -30,6 +31,12 @@ local specWarnDevouringFlame		= mod:NewSpecialWarningMove(64733, nil, nil, nil, 
 local specWarnDevouringFlameYou		= mod:NewSpecialWarningYou(64733, false, nil, nil, 1, 2)
 local specWarnDevouringFlameNear	= mod:NewSpecialWarningClose(64733, false, nil, nil, 1, 2)
 local yellDevouringFlame			= mod:NewYell(64733)
+
+--Harpoons
+local timerTurret1					= mod:NewTimer(34, "timerTurret1", 48642, nil, nil, 5, DBM_COMMON_L.IMPORTANT_ICON)
+local timerTurret2					= mod:NewTimer(61, "timerTurret2", 48642, nil, nil, 5, DBM_COMMON_L.IMPORTANT_ICON)
+local timerTurret3					= mod:NewTimer(88, "timerTurret3", 48642, nil, nil, 5, DBM_COMMON_L.IMPORTANT_ICON)
+local timerTurret4					= mod:NewTimer(115, "timerTurret4", 48642, nil, nil, 5, DBM_COMMON_L.IMPORTANT_ICON)
 
 -- Stage Two
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(2))
@@ -40,17 +47,18 @@ local specWarnFuseArmorOther		= mod:NewSpecialWarningTaunt(64771, nil, nil, nil,
 
 local timerDeepBreathCooldown		= mod:NewCDTimer(21, 64021, nil, nil, nil, 5) -- 21s on AC, permanent ground phase only
 local timerDeepBreathCast			= mod:NewCastTimer(2.5, 64021)
--- Grounded window, measured from the commander's yell. Her self-stun (62794) and the harpoon hits
--- (62505) both carry DO_NOT_LOG, so touchdown is invisible to the combat log and the yell is the only
--- start we get. Server: yell -> she flies to the landing spot and descends (~3s the first time from the
--- near hover point, ~5s later from the far one) -> 30s stunned -> Flame Breath -> Wing Buffet 2s later
--- -> airborne 4s after that. Wing Buffet does log and is exactly 4s from takeoff, so it snaps the
--- bar to its exact tail. Flame Breath is not usable for that: her AI skips events while casting, so
--- the buffet slips from 2s to however long the breath cast actually runs.
+-- Grounded window, measured from the commander's yell, because her self-stun (62794) and the harpoon
+-- spells all carry DO_NOT_LOG and never reach the combat log. Server: yell -> she flies to the landing
+-- spot and descends (~3s the first time from the near hover point, ~5s later from the far one) -> 30s
+-- stunned -> Flame Breath -> Wing Buffet -> airborne 4s after that. Wing Buffet does log, so it snaps
+-- the bar to its exact tail. Flame Breath cannot: her AI skips events while casting, so the buffet
+-- slips from 2s to however long the breath cast runs.
 local timerGrounded					= mod:NewTimer("v39-42", "timerGrounded", nil, nil, nil, 6)
 local timerFuseArmorCD				= mod:NewCDTimer(12, 64771, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON)
 
 mod:GroupSpells(63236, 64733) -- Devouring Flame (cast and damage)
+
+local combattime = 0
 
 function mod:FlameTarget(targetname)
 	if not targetname then return end
@@ -69,6 +77,18 @@ end
 function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	enrageTimer:Start(-delay)
+	combattime = GetTime()
+	if self:IsDifficulty("normal10") then -- REVIEW: No log yet to validate 10-man timers.
+		warnTurretsReadySoon:Schedule(101-delay)
+		timerTurret1:Start(-delay)
+		timerTurret2:Start(-delay)
+	else
+		warnTurretsReadySoon:Schedule(95-delay)
+		timerTurret1:Start(-delay) -- ~40s
+		timerTurret2:Start(-delay) -- +27
+		timerTurret3:Start(-delay) -- +27
+		timerTurret4:Start(-delay) -- +27
+	end
 end
 
 function mod:SPELL_CAST_START(args)
@@ -127,11 +147,14 @@ mod.SPELL_MISSED = mod.SPELL_DAMAGE
 
 function mod:CHAT_MSG_RAID_BOSS_EMOTE(emote)
 	if emote == L.EmoteHarpoonReady or emote:find(L.EmoteHarpoonReady, nil, true) then
-		-- Fired once per harpoon the engineers finish rebuilding
 		warnTurretsReady:Show()
 	elseif emote == L.EmotePhase2 or emote:find(L.EmotePhase2) then
 		-- Phase 2: Razorscale grounded permanently.
 		self:SetStage(2)
+		timerTurret1:Stop()
+		timerTurret2:Stop()
+		timerTurret3:Stop()
+		timerTurret4:Stop()
 		timerGrounded:Stop()
 		timerFuseArmorCD:Start(15)
 		timerDeepBreathCooldown:Start()
@@ -139,7 +162,19 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(emote)
 end
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
-	if msg == L.YellGround then
+	if (msg == L.YellAir or msg == L.YellAir2) and GetTime() - combattime > 30 then
+		if self:IsDifficulty("normal10") then -- REVIEW: 10-man timers unvalidated.
+			warnTurretsReadySoon:Schedule(41)
+			timerTurret1:Start(34)
+			timerTurret2:Start(61)
+		else
+			warnTurretsReadySoon:Schedule(95)
+			timerTurret1:Start(34)
+			timerTurret2:Start(61)
+			timerTurret3:Start(88)
+			timerTurret4:Start(115)
+		end
+	elseif msg == L.YellGround then
 		timerGrounded:Start()
 	end
 end
