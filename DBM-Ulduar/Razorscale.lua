@@ -8,8 +8,8 @@ mod:SetEncounterID(746)
 mod:RegisterCombat("combat_yell", L.YellAir)
 
 mod:RegisterEventsInCombat(
-	"SPELL_CAST_START 63317 64021 63236",
-	"SPELL_CAST_SUCCESS 64771 62666",
+	"SPELL_CAST_START 63317 64021 63236 62666",
+	"SPELL_CAST_SUCCESS 64771",
 	"SPELL_AURA_APPLIED 64771",
 	"SPELL_AURA_APPLIED_DOSE 64771",
 	"SPELL_DAMAGE 64733 64704",
@@ -50,7 +50,7 @@ local timerDeepBreathCast			= mod:NewCastTimer(2.5, 64021)
 -- Grounded window, measured from the commander's yell, because her self-stun (62794) and the harpoon
 -- spells all carry DO_NOT_LOG and never reach the combat log. Server: yell -> she flies to the landing
 -- spot and descends (~3s the first time from the near hover point, ~5s later from the far one) -> 30s
--- stunned -> Flame Breath -> Wing Buffet -> airborne 4s after that. Wing Buffet does log, so it snaps
+-- stunned -> Flame Breath -> Wing Buffet -> airborne 4s after that cast begins. Wing Buffet logs, so it snaps
 -- the bar to its exact tail. Flame Breath cannot: her AI skips events while casting, so the buffet
 -- slips from 2s to however long the breath cast runs.
 local timerGrounded					= mod:NewTimer("v39-42", "timerGrounded", nil, nil, nil, 6)
@@ -97,6 +97,8 @@ function mod:SPELL_CAST_START(args)
 		if self:GetStage() == 2 then
 			timerDeepBreathCooldown:Start()	-- only the permanent ground phase repeats it
 		end
+	elseif args.spellId == 62666 and self:GetStage() ~= 2 then	-- Wing Buffet, she lifts off 4s after this cast begins
+		timerGrounded:Start(4)
 	elseif args.spellId == 63236 then		-- Devouring Flame
 		self:BossTargetScanner(args.sourceGUID, "FlameTarget", 0.1, 12)
 	end
@@ -105,8 +107,6 @@ end
 function mod:SPELL_CAST_SUCCESS(args)
 	if args.spellId == 64771 then		-- Fuse Armor
 		timerFuseArmorCD:Start()
-	elseif args.spellId == 62666 and self:GetStage() ~= 2 then	-- Wing Buffet, she lifts off 4s later
-		timerGrounded:Start(4)
 	end
 end
 
