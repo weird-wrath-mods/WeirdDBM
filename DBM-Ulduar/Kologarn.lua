@@ -16,6 +16,7 @@ mod:RegisterEventsInCombat(
 	"SPELL_DAMAGE 63783 63982 63346 63976",
 	"SPELL_MISSED 63783 63982 63346 63976",
 	"CHAT_MSG_RAID_BOSS_EMOTE",
+	"CHAT_MSG_RAID_BOSS_WHISPER",
 	"UNIT_DIED",
 	"UNIT_SPELLCAST_SUCCEEDED"
 )
@@ -178,9 +179,39 @@ function mod:SPELL_DAMAGE(_, _, _, destGUID, destName, _, spellId)
 end
 mod.SPELL_MISSED = mod.SPELL_DAMAGE
 
+-- TEMPORARY server workaround: AzerothCore sends Kologarn EMOTE_EYES as creature_text type 41 (raid-wide
+-- RAID_BOSS_EMOTE) instead of type 42 (RAID_BOSS_WHISPER to the target only), so every client prints
+-- "focuses his eyes on you!". Both eye NPCs also Talk it on summon, so the target gets it twice.
+-- This block hides other players' copies and the duplicate. Delete it once AzerothCore makes the row type 42;
+-- the CHAT_MSG_RAID_BOSS_WHISPER handler below already covers the fixed server.
+local function isEyebeamEmote(event, msg)
+	return event == "CHAT_MSG_RAID_BOSS_EMOTE" and msg and msg:find(L.FocusedEyebeam, 1, true)
+end
+
+local lastEyebeamEmote = 0
+local emoteOnEvent = RaidBossEmoteFrame:GetScript("OnEvent")
+RaidBossEmoteFrame:SetScript("OnEvent", function(self, event, msg, sender, arg3, arg4, target, ...)
+	if isEyebeamEmote(event, msg) then
+		if target ~= UnitName("player") or GetTime() - lastEyebeamEmote < 5 then return end
+		lastEyebeamEmote = GetTime()
+	end
+	return emoteOnEvent(self, event, msg, sender, arg3, arg4, target, ...)
+end)
+
+ChatFrame_AddMessageEventFilter("CHAT_MSG_RAID_BOSS_EMOTE", function(_, event, msg, _, _, _, target)
+	return isEyebeamEmote(event, msg) and target ~= UnitName("player")
+end)
+-- end TEMPORARY server workaround
+
 function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg, _, _, _, target)
-	if msg == L.FocusedEyebeam or msg:find(L.FocusedEyebeam) then
+	if msg:find(L.FocusedEyebeam, 1, true) then
 		self:SendSync("EyeBeamOn", target)
+	end
+end
+
+function mod:CHAT_MSG_RAID_BOSS_WHISPER(msg)
+	if msg:find(L.FocusedEyebeam, 1, true) then
+		self:SendSync("EyeBeamOn", UnitName("player"))
 	end
 end
 
@@ -193,9 +224,8 @@ function mod:OnSync(msg, target)
 			specWarnEyebeam:ScheduleVoice(1, "keepmove")
 			yellBeam:Yell()
 		end
-		warnFocusedEyebeam:Show(target)
 		if self.Options.SetIconOnEyebeamTarget then
-			self:SetIcon(target, 5, 8)
+			self:SetIcon(target, 8, 8)
 		end
 	end
 end
