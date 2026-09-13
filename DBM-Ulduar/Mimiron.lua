@@ -1,7 +1,7 @@
 local mod	= DBM:NewMod("Mimiron", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20260727180000")
+mod:SetRevision("20260912230000")
 mod:SetCreatureID(33432)
 mod:SetEncounterID(754)
 mod:SetUsedIcons(1, 2, 3, 4, 5, 6, 7, 8)
@@ -134,6 +134,13 @@ local function Flames(self)	-- Flames -- UNIT_SPELLCAST_SUCCEEDED does not show 
 	warnFlamesSoon:Schedule(25)
 end
 
+-- Bomb Bot (63811) is flagged SPELL_ATTR0_DO_NOT_LOG, so the only signal is UNIT_SPELLCAST_SUCCEEDED on a client that has
+-- the ACU as a unit (target/focus/mouseover). Sync it raid-wide, and keep the server's 15s repeat going when nobody saw it.
+local function BombBotLoop(self)
+	timerBombBotSpawn:Start()
+	self:Schedule(15, BombBotLoop, self) -- AC: events.Repeat(15s)
+end
+
 local function warnNapalmShellTargets(self)
 	warnNapalmShell:Show(table.concat(napalmShellTargets, "<, >"))
 	table.wipe(napalmShellTargets)
@@ -187,7 +194,9 @@ local function NextPhase(self)
 		timerRocketStrikeCD:Cancel()
 		timerNextFlameSuppressantP2:Cancel()
 		timerP2toP3:Start()
-		timerBombBotSpawn:Start(32)
+		-- AC: yell +17s ACU attacks, +15s summon cast starts, +2s cast finishes
+		timerBombBotSpawn:Start(34)
+		self:Schedule(34, BombBotLoop, self)
 		if self.Options.HealthFrame then
 			DBM.BossHealth:Clear()
 			DBM.BossHealth:AddBoss(33670, L.MobPhase3)
@@ -201,6 +210,7 @@ local function NextPhase(self)
 				SetLootMethod(cachedLootmethod)
 			end
 		end
+		self:Unschedule(BombBotLoop)
 		timerBombBotSpawn:Cancel()
 		timerP3toP4:Start()
 		timerProximityMines:Start(32.8)
@@ -366,9 +376,8 @@ function mod:UNIT_SPELLCAST_SUCCEEDED(uId, spellName)
 		end
 	elseif spellName == GetSpellInfo(63811) then	--Bomb Bot
 		if cidFromGUID(UnitGUID(uId)) ~= 33670 then return end --to avoid double trigger
-		if self:AntiSpam(3, 5) then
-			warnBombBotSpawn:Show()
-			timerBombBotSpawn:Start()
+		if self:AntiSpam(3, 6) then
+			self:SendSync("BombBot")
 		end
 	end
 end
@@ -423,6 +432,10 @@ function mod:OnSync(event, args)
 		timerP3Wx2LaserBarrageCast:Cancel()
 		timerNextP3Wx2LaserBarrage:Cancel()
 		specWarnP3Wx2LaserBarrage:Cancel()
+	elseif event == "BombBot" and self.vb.phase == 3 and self:AntiSpam(3, 5) then
+		warnBombBotSpawn:Show()
+		self:Unschedule(BombBotLoop)
+		BombBotLoop(self)
 	elseif event == "LootMsg" and args and self:AntiSpam(2, 1) then
 		warnLootMagneticCore:Show(args)
 	end
