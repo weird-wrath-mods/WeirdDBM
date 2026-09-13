@@ -3527,7 +3527,8 @@ do
 		if not cSyncSender[sender] then
 			cSyncSender[sender] = true
 			cSyncReceived = cSyncReceived + 1
-			if cSyncReceived > 2 then -- need at least 3 sync to combat start. (for security)
+			-- need 3 syncs to start combat (spoofed or false pulls), capped at the other group members so 2-3 player groups can sync
+			if cSyncReceived >= mmin(3, mmax(GetNumRaidMembers(), GetNumPartyMembers() + 1) - 1) then
 				local lag = select(3, GetNetStats()) / 1000
 				delay = tonumber(delay or 0) or 0
 				mod = DBM:GetModByName(mod or "")
