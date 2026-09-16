@@ -97,7 +97,7 @@ local warnFrostBomb					= mod:NewSpellAnnounce(64623, 3)
 
 local timerFrostBombExplosion		= mod:NewCastTimer(13.5, 65333, nil, nil, nil, 3)
 local timerNextFrostBomb			= mod:NewNextTimer(45, 64623, nil, false, nil, 3, nil, DBM_COMMON_L.HEROIC_ICON, true) --disabled by default to reduce clutter; not part of classic DBM
-local timerNextFlameSuppressantP2	= mod:NewNextTimer(10, 65192, nil, false, nil, 3) --disabled by default to reduce clutter; not part of classic DBM
+local timerNextFlameSuppressantP2	= mod:NewNextTimer(10, 65192, "Melee Flame Clear", false, nil, 3) --disabled by default to reduce clutter; not part of classic DBM
 
 -- Stage Three
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(3)..": "..L.MobPhase3)
@@ -277,6 +277,8 @@ function mod:SPELL_CAST_START(args)
 		warnFrostBomb:Show()
 		timerFrostBombExplosion:Start()
 		timerNextFrostBomb:Start()
+	elseif spellId == 64570 then	-- Flame Suppressant (phase 1, one-shot)
+		timerNextFlameSuppressantP1:Stop()
 	elseif spellId == 64383 then -- Self Repair (phase 4)
 		timerSelfRepair:Start(args.sourceName)
 	end
@@ -394,7 +396,7 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		local is25 = self:IsDifficulty("normal25") or self:IsDifficulty("heroic25")
 		timerHardmode:Start(is25 and 600 or 480)
 		timerPlasmaBlastCD:Start(23)
-		timerNextFlameSuppressantP1:Start(73)
+		timerNextFlameSuppressantP1:Start("v73-83")	-- AC: 60s after MK II engages (+13s intro), slips when Plasma Blast/Proximity Mines are mid-cast
 		timerProximityMines:Start(19)
 		timerNextShockBlast:Start(33)
 		timerNextFlames:Start(7)
