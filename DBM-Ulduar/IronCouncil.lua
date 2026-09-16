@@ -110,7 +110,7 @@ end
 
 function mod:OnCombatEnd()
 	if self.Options.RangeFrame then
-		DBM.RangeCheck:Hide()
+		DBM.RangeCheck:Hide(true)	-- AC: force, else restoreRange left by SetBossRange re-shows the frame
 	end
 end
 

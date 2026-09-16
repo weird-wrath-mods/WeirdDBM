@@ -253,7 +253,7 @@ function mod:OnCombatEnd()
 		DBM.BossHealth:Hide()
 	end
 	if self.Options.RangeFrame then
-		DBM.RangeCheck:Hide()
+		DBM.RangeCheck:Hide(true)	-- AC: force, else restoreRange left by SetBossRange re-shows the frame
 	end
 	-- Don't change loot if it was manually changed away from ffa
 	if self.Options.AutoChangeLootToFFA and DBM:GetRaidRank() == 2 and GetLootMethod() == "freeforall" and cachedLootmethod then
