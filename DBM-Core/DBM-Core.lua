@@ -82,9 +82,9 @@ local function currentFullDate()
 end
 
 DBM = {
-	Revision = parseCurseDate("20260916000000"), -- keep in step with ReleaseRevision; if it lags, same-build clients nag each other as out of date
+	Revision = parseCurseDate("20260917000000"), -- keep in step with ReleaseRevision; if it lags, same-build clients nag each other as out of date
 	DisplayVersion = GetAddOnMetadata("DBM-Core", "Version") or "<unknown version>", -- read from the TOC ## Version (single source of truth)
-	ReleaseRevision = releaseDate(2026, 09, 16) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
+	ReleaseRevision = releaseDate(2026, 09, 17) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
 }
 
 local fakeBWVersion = 7558

@@ -50,6 +50,7 @@ local timerProximityMines			= mod:NewCDTimer(38, 63027, nil, nil, nil, 3)
 local timerShockBlast				= mod:NewCastTimer(4, 63631, nil, nil, nil, 2, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerNextShockBlast			= mod:NewNextTimer(30, 63631, nil, nil, nil, 2, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerNapalmShell				= mod:NewBuffActiveTimer(8, 63666, nil, "Healer", 2, 5, nil, DBM_COMMON_L.IMPORTANT_ICON..DBM_COMMON_L.HEALER_ICON)
+local timerPlasmaBlastActive		= mod:NewTargetTimer(6, 64529, nil, nil, nil, 5, nil, DBM_COMMON_L.TANK_ICON) --6s per Spell.dbc
 local timerPlasmaBlastCD			= mod:NewCDTimer(22, 64529, nil, "Tank", 2, 5, nil, DBM_COMMON_L.TANK_ICON)
 
 mod:AddSetIconOption("SetIconOnNapalm", 63666, false, false, {1, 2, 3, 4, 5, 6, 7})
@@ -166,6 +167,7 @@ local function NextPhase(self)
 		timerNextShockBlast:Stop()
 		timerProximityMines:Stop()
 		timerNextFlameSuppressantP1:Stop()
+		timerPlasmaBlastActive:Stop()
 		timerPlasmaBlastCD:Stop()
 		timerP1toP2:Start()
 		timerNextP3Wx2LaserBarrage:Schedule(42.75, 30)
@@ -313,6 +315,7 @@ function mod:SPELL_AURA_APPLIED(args)
 		self:Schedule(0.3, warnNapalmShellTargets, self)
 	elseif args:IsSpellID(64529, 62997) then	-- Plasma Blast
 		warnPlasmaBlast:Show(args.destName)
+		timerPlasmaBlastActive:Start(args.destName)
 		if self.Options.SetIconOnPlasmaBlast then
 			self:SetIcon(args.destName, 8, 6)
 		end
