@@ -73,6 +73,7 @@ local warnOverwhelmingPower		= mod:NewTargetAnnounce(61888, 2)
 local warnStaticDisruption		= mod:NewTargetAnnounce(63494, 3)
 
 local timerOverwhelmingPower	= mod:NewTargetTimer(25, 61888, nil, nil, nil, 5, nil, DBM_COMMON_L.TANK_ICON..DBM_COMMON_L.DEADLY_ICON, nil, 3)
+local timerFusionPunchCD		= mod:NewCDTimer("v15-20", 61903, nil, nil, nil, 5, nil, DBM_COMMON_L.TANK_ICON..DBM_COMMON_L.MAGIC_ICON) --AC: 15s first, then 15-20s cast-to-cast
 local timerFusionPunchCast		= mod:NewCastTimer(3, 61903, nil, nil, nil, 5, nil, DBM_COMMON_L.TANK_ICON..DBM_COMMON_L.MAGIC_ICON)
 local timerFusionPunchActive	= mod:NewTargetTimer(4, 61903, nil, nil, nil, 5, nil, DBM_COMMON_L.TANK_ICON..DBM_COMMON_L.MAGIC_ICON)
 mod:AddSetIconOption("SetIconOnOverwhelmingPower", 61888, false, false, {8})
@@ -101,6 +102,7 @@ function mod:OnCombatStart(delay)
 	timerRuneofPowerCD:Start(30-delay) -- 30s on AC
 	timerOverloadCD:Start(-delay) -- 20-40s variance on AC
 	timerRuneofShieldsCD:Start(20-delay)
+	timerFusionPunchCD:Start(15-delay) -- 15s on AC
 	table.wipe(disruptTargets)
 	self.vb.disruptIcon = 7
 	runemasterAlive = true
@@ -134,6 +136,7 @@ function mod:SPELL_CAST_START(args)
 	elseif args:IsSpellID(61903, 63493) then	-- Fusion Punch
 		warnFusionPunch:Show()
 		timerFusionPunchCast:Start()
+		timerFusionPunchCD:Start()
 	elseif args:IsSpellID(62274, 63489) then	-- Shield of Runes
 		warnShieldofRunes:Show()
 		timerRuneofShieldsCD:Start()
@@ -260,6 +263,7 @@ function mod:UNIT_DIED(args)
 			timerRuneofSummoning:Start(25)
 		end
 		timerFusionPunchCast:Cancel()
+		timerFusionPunchCD:Cancel()
 	elseif cid == 32927 then	--Runemaster Molgeim
 		runemasterAlive = false
 		if brundirAlive and steelbreakerAlive then
