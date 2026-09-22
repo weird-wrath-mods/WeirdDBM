@@ -430,6 +430,10 @@ function DBM_GUI:CreateBossModPanel(mod)
 				panel:CreateLine(options)
 			else
 				local title, desc, _, icon
+				--A server-side spell can have a name but no client description (summons, mostly), which
+				--leaves its section reading "No description". A mod can supply its own as GroupDesc<id>.
+				--rawget because the misc table falls back to returning the key for anything unset.
+				local descOverride = rawget(mod.localization.miscStrings, "GroupDesc" .. spellID)
 				if tonumber(spellID) then
 					local _title = DBM:GetSpellInfo(spellID)
 					if _title then
@@ -445,6 +449,7 @@ function DBM_GUI:CreateBossModPanel(mod)
 				else
 					title = spellID
 				end
+				desc = descOverride or desc
 				local catpanel = panel:CreateAbility(title, icon)
 				if desc then
 					catpanel:CreateSpellDesc(desc)

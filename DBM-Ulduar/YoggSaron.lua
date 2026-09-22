@@ -8,12 +8,13 @@ mod:RegisterCombat("combat_yell", L.YellPull)
 mod:SetUsedIcons(1, 2, 3, 4, 5, 6, 7, 8)
 
 mod:RegisterEventsInCombat(
-	"SPELL_CAST_START 64059 64189 63138 63830 63802",
+	"SPELL_CAST_START 64059 64189 63138 63830 63802 63134 63147",
 	"SPELL_CAST_SUCCESS 64144 64465", --64167 64163",
 	"SPELL_SUMMON 62979",
 	"SPELL_AURA_APPLIED 63802 63830 63881 64126 64125 63138 63894 64775 64163 64465",
 	"SPELL_AURA_REMOVED 63802 63894 64163 63830 63138 63881 64465",
 	"SPELL_AURA_REMOVED_DOSE 63050",
+	"CHAT_MSG_MONSTER_YELL",
 	"UNIT_HEALTH"
 --	"UNIT_SPELLCAST_START boss1"
 )
@@ -39,6 +40,9 @@ mod:AddBoolOption("ShowSaraHealth", false)
 -- Guardian of Yogg-Saron
 -- mod:AddTimerLine(L.GuardianofYoggSaron)
 local warnGuardianSpawned			= mod:NewAnnounce("WarningGuardianSpawned", 3, 62979, nil, nil, nil, 62979)
+
+local timerNextGuardian				= mod:NewTimer(10, "NextGuardian", 62979, nil, nil, 1, nil, nil, nil, nil, nil, nil, nil, 62979)
+local timerGuardianAfter			= mod:NewTimer(20, "GuardianAfter", 62979, nil, nil, 1, nil, nil, nil, nil, nil, nil, nil, 62979)
 
 local specWarnGuardianLow			= mod:NewSpecialWarning("SpecWarnGuardianLow", false, nil, nil, nil, nil, nil, 62979, 62979)
 
@@ -119,6 +123,11 @@ mod:AddSetIconOption("SetIconOnBeacon", 64465, true, true, {1, 2, 3, 4, 5, 6, 7,
 -- mod:AddTimerLine(L.ImmortalGuardian)
 local warnEmpowerSoon				= mod:NewSoonAnnounce(64486, 4)
 
+--64158 "Immortal Guardian" is the client's summon spell for NPC 33988, so it gives this its own
+--options section the way 62979 does for the phase 1 waves. The server spawns the add with
+--SummonCreature rather than casting it, so it never appears in the combat log.
+local timerNextImmortalGuardian		= mod:NewTimer(10, "NextImmortalGuardian", 64158, "Tank", nil, 1, nil, nil, nil, nil, nil, nil, nil, 64158)
+
 local timerEmpower					= mod:NewCDTimer(45.0, 64486, nil, nil, nil, 3) -- 45s on AC
 local timerEmpowerDuration			= mod:NewBuffActiveTimer(10, 64486, nil, nil, nil, 3)
 
@@ -141,12 +150,148 @@ local SanityBuff = DBM:GetSpellInfoNew(63050)
 mod.vb.brainLinkIcon = 2
 mod.vb.beaconIcon = 8
 mod.vb.Guardians = 0
+mod.vb.guardianWave = 0
+
+--boss_yoggsaron.cpp: EVENT_SARA_P1_SUMMON comes due at the pull and repeats on a 20s interval that
+--shrinks 2s per wave to a 10s floor (:919). Two things bend that schedule. Sara's UpdateAI returns
+--early while she is casting (:906) and Repeat() runs off execution time, so a tick that comes due
+--mid-cast is pushed to the end of that cast and every later wave inherits the shift permanently.
+--Her P1 selector repeats every 4.9s (:939) and the spell it triggers casts for 4s, so most ticks do
+--land mid-cast. Rather than assume that cycle we watch her casts live and push as each one starts.
+--The informed cloud then trails its tick by a fixed delay: it takes 63031, whose Spell.dbc entry is
+--a 10s periodic trigger (EffectAuraPeriod_1 = 10000) of 62979, the summon itself. So the guardian
+--appears exactly GUARDIAN_CLOUD_DELAY after its tick executed, first wave included.
+--That relation runs both ways, which is what keeps this honest: a stall is knife-edge (a 0.2s error
+--in where a due time falls decides whether a 4s cast swallows it), and a free-running chain can
+--never shed a boundary miss. So each spawn is read back as ground truth for when its tick really
+--ran. Spawns nowhere near the prediction are players walking into a cloud (:1120), which summon
+--without touching the server's schedule, and are ignored.
+local GUARDIAN_CLOUD_DELAY = 10--63031 EffectAuraPeriod_1
+--A tick can only ever run at one of two moments: when it came due, or at the end of the one cast
+--that swallowed it. So a spawn is only believed when the tick it implies matches one of those two
+--to within event jitter, rather than anywhere in a window. That rejects player-triggered clouds
+--(:1120), which have no reason to land on either, and it still catches the case we got wrong: if
+--we judged a cast boundary the other way to the server, the spawn matches the other candidate and
+--pulls us straight. A cloud coinciding with a candidate can still fool it, but only by GUARDIAN_JITTER.
+local GUARDIAN_JITTER = 0.4--event latency spread between the cast and summon we time this from
+local SARA_P1_CAST = 4--63134/63138/63147 CastingTimeIndex 15 = 4000ms; the selector she casts is instant, this is the visible cast that holds her in UNIT_STATE_CASTING
+local guardianGaps = {20, 18, 16, 14, 12}--gap after wave N, 10s from wave 6 on
+
+local guardianWave--forward declaration, SaraCastStall reschedules it
+
+--The pending wave is done; advance to the next. exec is when its tick actually ran, read back from
+--the spawn; without one we fall back to where we predicted it would run.
+function guardianWave(self, exec)
+	local gap = guardianGaps[self.vb.guardianWave] or 10
+	self.vb.guardianWave = self.vb.guardianWave + 1
+	--guardianDue is where the tick runs if nothing stalls it; guardianStalled is the one cast end it
+	--slips to if one does. Both stay live so a spawn can tell us which the server picked.
+	local due = (exec or self.vb.guardianStalled or self.vb.guardianDue) + gap
+	self.vb.guardianDue = due
+	--A cast already running when the tick comes due swallows it just the same, and only this catches
+	--that: once the gap is down to 10s it equals the cloud delay, so the next tick comes due the very
+	--instant this guardian appears and no later SPELL_CAST_START can ever speak for it.
+	local castEnd = self.vb.saraCastEnd
+	self.vb.guardianStalled = (castEnd and castEnd > due and due >= castEnd - SARA_P1_CAST) and castEnd or nil
+	local nextIn = (self.vb.guardianStalled or due) + GUARDIAN_CLOUD_DELAY - GetTime()
+	timerNextGuardian:Start(nextIn)
+	timerGuardianAfter:Start(nextIn + (guardianGaps[self.vb.guardianWave] or 10))
+	self:Unschedule(guardianWave)
+	--the spawn normally advances us; this only fires if it never arrives
+	self:Schedule(nextIn + SARA_P1_CAST + GUARDIAN_JITTER, guardianWave, self)
+end
+
+--A guardian appeared. Believe it only if the tick it implies is one the server could have run.
+local function guardianSpawned(self)
+	local exec = GetTime() - GUARDIAN_CLOUD_DELAY
+	local stalled, due = self.vb.guardianStalled, self.vb.guardianDue
+	if stalled and math.abs(exec - stalled) <= GUARDIAN_JITTER then
+		guardianWave(self, stalled)--snap to the candidate, not to our own latency
+	elseif due and math.abs(exec - due) <= GUARDIAN_JITTER then
+		guardianWave(self, due)--the server did not stall it after all
+	end
+end
+
+--Sara started a P1 cast: if the pending tick is due inside it, it slips to the end of the cast.
+--Recorded separately from guardianDue so the spawn can still vouch for either reading.
+local function saraCastStall(self)
+	local castEnd = GetTime() + SARA_P1_CAST
+	self.vb.saraCastEnd = castEnd--remembered so a tick coming due mid-cast can see it too
+	local due = self.vb.guardianDue
+	if not due or self.vb.guardianStalled or due <= GetTime() or due >= castEnd then return end
+	timerNextGuardian:AddTime(castEnd - due)
+	timerGuardianAfter:AddTime(castEnd - due)--the whole chain is relative to due, so the wave after next shifts with it
+	self.vb.guardianStalled = castEnd
+	self:Unschedule(guardianWave)
+	self:Schedule(castEnd + GUARDIAN_CLOUD_DELAY - GetTime() + GUARDIAN_JITTER, guardianWave, self)
+end
+
+--Sara drops to 1 health and says this in the same breath as events.SetPhase(EVENT_PHASE_TWO) (:787),
+--which masks EVENT_SARA_P1_SUMMON off for good: no further tick can run, so nothing more is armed.
+--The wave after the pending one is now impossible, so that bar goes at once. The pending one is left
+--to run out, since a cloud already carrying the aura can still tick until ACTION_UNSUMMON_CLOUDS
+--strips it 4s later (:879).
+local function guardianStop(self)
+	self:Unschedule(guardianWave)
+	timerGuardianAfter:Stop()
+	self.vb.guardianDue = nil--also stops a spawn or a cast from arming anything further
+	self.vb.guardianStalled = nil
+end
+
+--The bar marks the summon itself. The add is rooted and passive for SPAWN_STASIS_TIME after it
+--(:2001), but it is there and attackable throughout, and hitting one releases it early via
+--JustEngagedWith, so there is nothing to wait for: raid logs have each add taking its first damage
+--1.5-3.6s after its tick, which is just how long it takes someone to reach it.
+
+--Lunatic Gaze is channeled (64163 carries SPELL_ATTR1_CHANNELED_2 with a 4000ms duration), so it
+--holds Yogg in UNIT_STATE_CASTING and his UpdateAI returns early for all of it (:1338). A summon
+--tick due inside the channel runs only when it ends, and Repeat(10s) measures from execution, so
+--every later add inherits that shift. He rolls the gaze on Repeat(13s, 22s), which is not
+--predictable, so the channel is watched live the way Sara's casts are in phase 1.
+local LUNATIC_GAZE_CHANNEL = 4
+
+local immortalGuardianWave--forward declaration, lunaticGazeStall reschedules it
+
+--Fired as an add spawns; arm the bar for the one after it. immortalDue is the tick, absolute, so a
+--stall can move it without the chain drifting.
+function immortalGuardianWave(self)
+	self.vb.immortalDue = self.vb.immortalDue + 10
+	local nextIn = self.vb.immortalDue - GetTime()
+	timerNextImmortalGuardian:Start(nextIn)
+	self:Unschedule(immortalGuardianWave)--Phase3 is synced by every raider who sees the aura drop
+	self:Schedule(nextIn, immortalGuardianWave, self)
+end
+
+--Yogg started channeling: a tick due inside it slips to the end of the channel.
+local function lunaticGazeStall(self)
+	local channelEnd = GetTime() + LUNATIC_GAZE_CHANNEL
+	local due = self.vb.immortalDue
+	if not due or due <= GetTime() or due >= channelEnd then return end
+	timerNextImmortalGuardian:AddTime(channelEnd - due)
+	self.vb.immortalDue = channelEnd
+	self:Unschedule(immortalGuardianWave)
+	self:Schedule(channelEnd - GetTime(), immortalGuardianWave, self)
+end
+
+function mod:CHAT_MSG_MONSTER_YELL(msg)
+	if msg == L.YellLucidDream or msg:find(L.YellLucidDream) then
+		guardianStop(self)
+	end
+end
 
 function mod:OnCombatStart()
 	self:SetStage(1)
 	self.vb.brainLinkIcon = 2
 	self.vb.beaconIcon = 8
 	self.vb.Guardians = 0
+	--Wave 1 comes due with the aggro yell itself, so the bar opens on the cloud delay alone.
+	self.vb.guardianWave = 1
+	self.vb.guardianDue = GetTime()
+	self.vb.guardianStalled = nil
+	self.vb.saraCastEnd = nil
+	timerNextGuardian:Start(GUARDIAN_CLOUD_DELAY)
+	timerGuardianAfter:Start(guardianGaps[1] + GUARDIAN_CLOUD_DELAY)
+	self:Schedule(GUARDIAN_CLOUD_DELAY + SARA_P1_CAST + GUARDIAN_JITTER, guardianWave, self)
 	enrageTimer:Start()
 	timerAchieve:Start()
 	table.wipe(targetWarningsShown)
@@ -206,6 +351,9 @@ function mod:SPELL_CAST_START(args)
 	elseif spellId == 63802 then	-- Brain Link
 		timerBrainLinkCD:Start()
 	end
+	if self.vb.phase == 1 and (spellId == 63138 or spellId == 63134 or spellId == 63147) then	-- Sara's Fervor/Blessing/Anger
+		saraCastStall(self)
+	end
 end
 
 function mod:SPELL_CAST_SUCCESS(args)
@@ -228,6 +376,9 @@ function mod:SPELL_SUMMON(args)
 	if args.spellId == 62979 then
 		self.vb.Guardians = self.vb.Guardians + 1
 		warnGuardianSpawned:Show(self.vb.Guardians)
+		if self.vb.phase == 1 then
+			guardianSpawned(self)
+		end
 	end
 end
 
@@ -293,6 +444,12 @@ function mod:SPELL_AURA_APPLIED(args)
 		end
 	elseif args:IsSpellID(63894, 64775) and self.vb.phase < 2 then	-- Shadowy Barrier of Yogg-Saron (this is happens when p2 starts, ~1s after IEEU, so correction factor is needed). Bugged on Warmane, 63894 is never applied (only removed), instead 64775 is applied to Sara
 		self:SetStage(2)
+		self:Unschedule(guardianWave)
+		self.vb.guardianDue = nil
+		self.vb.guardianStalled = nil
+		self.vb.immortalDue = nil
+		timerNextGuardian:Stop()
+		timerGuardianAfter:Stop()
 		timerMaladyCD:Start(12)	-- 12s AC
 		timerBrainLinkCD:Start(18)	--  18s AC
 		timerBrainPortal:Start(60)	-- 60s AC
@@ -310,6 +467,7 @@ function mod:SPELL_AURA_APPLIED(args)
 		specWarnLunaticGaze:Show(args.sourceName)
 		specWarnLunaticGaze:Play("turnaway")
 		timerLunaticGaze:Start()
+		lunaticGazeStall(self)
 	elseif spellId == 64465 then -- Shadow Beacon
 		if self.Options.SetIconOnBeacon then
 			self:ScanForMobs(args.destGUID, 2, self.vb.beaconIcon, 1, nil, 6, "SetIconOnBeacon", true, nil, nil, true)
@@ -370,6 +528,12 @@ end
 	end
 end]]
 
+--Yogg arms EVENT_YS_SUMMON_GUARDIAN at 0ms as the Shadowy Barrier comes off and repeats it flat
+--every 10s (:1290, :1361), so the first add lands on the phase change itself and the bar counts to
+--the one after. SummonImmortalGuardian spawns the add directly rather than through a spell (:1199),
+--so it is there on the tick with no delay -- and with no combat log event either, which is why this
+--runs open loop with nothing to resync against. Safe here: of his phase 3 casts only Deafening Roar
+--has a cast time to stall a tick on, and that one is hard mode only (:1297).
 function mod:OnSync(msg)
 	if msg == "Phase3" then
 		self:SetStage(3)
@@ -378,6 +542,10 @@ function mod:OnSync(msg)
 		timerMaladyCD:Cancel()
 		timerBrainLinkCD:Cancel()
 		timerEmpower:Start(45.0) -- (S3 HM log 2022/07/21) - 45.0
+		--The first add is summoned by the phase change itself, so the bar opens on the one after it.
+		self:Unschedule(immortalGuardianWave)
+		self.vb.immortalDue = GetTime()
+		immortalGuardianWave(self)
 		warnP3:Show()
 		warnP3:Play("pthree")
 		warnEmpowerSoon:Schedule(40)

@@ -405,7 +405,10 @@ L:SetWarningLocalization({
 })
 
 L:SetTimerLocalization({
-	NextPortal	= "Brain Portal"
+	NextPortal		= "Brain Portal",
+	NextGuardian			= "Guardian",
+	GuardianAfter			= "Guardian (next but one)",
+	NextImmortalGuardian	= "Immortal Guardian"
 })
 
 L:SetOptionLocalization({
@@ -418,12 +421,17 @@ L:SetOptionLocalization({
 	SpecWarnMadnessOutNow			= "Show special warning shortly before $spell:64059 ends",
 	SpecWarnBrainPortalSoon			= "Show special warning for next Brain Portal",
 	NextPortal						= "Show timer for next Brain Portal",
+	NextGuardian					= "Show timer for next Guardian of Yogg-Saron spawn (Phase 1)",
+	GuardianAfter					= "Show a second timer for the Guardian of Yogg-Saron spawn after next (Phase 1)",
+	NextImmortalGuardian			= "Show timer for next Immortal Guardian spawn (Phase 3)",
 	ShowSaraHealth					= "Show health frame for Sara in Phase 1 (must be targeted or focused by at least one raid member)",
 	MaladyArrow						= "Show DBM arrow when $spell:63881 is near you"
 })
 
 L:SetMiscLocalization({
 	YellPull			= "The time to strike at the head of the beast will soon be upon us! Focus your anger and hatred on his minions!",
+	YellLucidDream		= "I am the lucid dream",
+	GroupDesc64158		= "Summons an Immortal Guardian. Yogg-Saron summons one every 10 seconds for the rest of the fight once Phase 3 begins.",
 	S1TheLucidDream		= "Stage One: The Lucid Dream",
 	Sara				= "Sara",
 	GuardianofYoggSaron	= "Guardian of Yogg-Saron",
