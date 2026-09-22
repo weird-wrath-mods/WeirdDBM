@@ -407,7 +407,7 @@ L:SetWarningLocalization({
 L:SetTimerLocalization({
 	NextPortal		= "Brain Portal",
 	NextGuardian			= "Guardian",
-	GuardianAfter			= "Guardian (next but one)",
+	GuardianAfter			= "Guardian 2",
 	NextImmortalGuardian	= "Immortal Guardian"
 })
 
