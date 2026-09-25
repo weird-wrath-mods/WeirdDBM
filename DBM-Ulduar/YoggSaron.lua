@@ -179,6 +179,10 @@ local GUARDIAN_CLOUD_DELAY = 10--63031 EffectAuraPeriod_1
 --pulls us straight. A cloud coinciding with a candidate can still fool it, but only by GUARDIAN_JITTER.
 local GUARDIAN_JITTER = 0.4--event latency spread between the cast and summon we time this from
 local SARA_P1_CAST = 4--63134/63138/63147 CastingTimeIndex 15 = 4000ms; the selector she casts is instant, this is the visible cast that holds her in UNIT_STATE_CASTING
+--The server acts on whole update ticks, so a tick due just before a cast starts can still be
+--swallowed by it. 23 Sep logs: one due 0.02s before a cast start slipped, one due 0.38s before ran.
+--Wave 2 lands on this edge every pull (casts at 15 + 4.9n put one at ~19.9s, the tick at 20s).
+local SERVER_SWALLOW = 0.1
 local guardianGaps = {20, 18, 16, 14, 12}--gap after wave N, 10s from wave 6 on
 
 local guardianWave--forward declaration, SaraCastStall reschedules it
@@ -196,7 +200,7 @@ function guardianWave(self, exec)
 	--that: once the gap is down to 10s it equals the cloud delay, so the next tick comes due the very
 	--instant this guardian appears and no later SPELL_CAST_START can ever speak for it.
 	local castEnd = self.vb.saraCastEnd
-	self.vb.guardianStalled = (castEnd and castEnd > due and due >= castEnd - SARA_P1_CAST) and castEnd or nil
+	self.vb.guardianStalled = (castEnd and castEnd > due and due >= castEnd - SARA_P1_CAST - SERVER_SWALLOW) and castEnd or nil
 	local nextIn = (self.vb.guardianStalled or due) + GUARDIAN_CLOUD_DELAY - GetTime()
 	timerNextGuardian:Start(nextIn)
 	timerGuardianAfter:Start(nextIn + (guardianGaps[self.vb.guardianWave] or 10))
@@ -206,13 +210,16 @@ function guardianWave(self, exec)
 end
 
 --A guardian appeared. Believe it only if the tick it implies is one the server could have run.
+--The chain is kept on the spawn's own time, not the matched candidate: candidates start from the
+--pull yell, which reaches us with a different latency than the combat log, and against a knife-edge
+--stall that offset alone decides the call. Spawns and casts share the combat log's latency.
 local function guardianSpawned(self)
 	local exec = GetTime() - GUARDIAN_CLOUD_DELAY
+	--Wave 1 comes before any cloud can have been touched, so it is taken as is to anchor the chain.
+	if self.vb.guardianWave == 1 then return guardianWave(self, exec) end
 	local stalled, due = self.vb.guardianStalled, self.vb.guardianDue
-	if stalled and math.abs(exec - stalled) <= GUARDIAN_JITTER then
-		guardianWave(self, stalled)--snap to the candidate, not to our own latency
-	elseif due and math.abs(exec - due) <= GUARDIAN_JITTER then
-		guardianWave(self, due)--the server did not stall it after all
+	if (stalled and math.abs(exec - stalled) <= GUARDIAN_JITTER) or (due and math.abs(exec - due) <= GUARDIAN_JITTER) then
+		guardianWave(self, exec)
 	end
 end
 
@@ -222,7 +229,7 @@ local function saraCastStall(self)
 	local castEnd = GetTime() + SARA_P1_CAST
 	self.vb.saraCastEnd = castEnd--remembered so a tick coming due mid-cast can see it too
 	local due = self.vb.guardianDue
-	if not due or self.vb.guardianStalled or due <= GetTime() or due >= castEnd then return end
+	if not due or self.vb.guardianStalled or due <= GetTime() - SERVER_SWALLOW or due >= castEnd then return end
 	timerNextGuardian:AddTime(castEnd - due)
 	timerGuardianAfter:AddTime(castEnd - due)--the whole chain is relative to due, so the wave after next shifts with it
 	self.vb.guardianStalled = castEnd
