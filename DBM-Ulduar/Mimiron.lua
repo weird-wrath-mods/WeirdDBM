@@ -31,6 +31,7 @@ mod:RegisterEventsInCombat(
 )
 
 --General
+local timerCombatStart				= mod:NewCombatTimer(8) -- AC: MK II selectable 8s after the normal pull yell, 13s after the self-destruct yell
 local timerEnrage					= mod:NewBerserkTimer(900, nil, nil, nil, false) -- berserk default OFF
 local timerP1toP2					= mod:NewTimer(42.75, "TimeToPhase2", nil, nil, nil, 6)
 local timerP2toP3					= mod:NewTimer(17, "TimeToPhase3", nil, nil, nil, 6)
@@ -389,6 +390,7 @@ end
 function mod:CHAT_MSG_MONSTER_YELL(msg)
 	if msg == L.YellPull or msg:find(L.YellPull) then -- register Normal Mode
 		self.vb.hardmode = false -- set this here instead of CombatStart to prevent possible overwrites
+		timerCombatStart:Start()
 		timerPlasmaBlastCD:Start(18)
 		timerNextShockBlast:Start(28)
 		timerProximityMines:Start(14)
@@ -398,6 +400,7 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		self:SetWipeTime(10)
 		local is25 = self:IsDifficulty("normal25") or self:IsDifficulty("heroic25")
 		timerHardmode:Start(is25 and 600 or 480)
+		timerCombatStart:Start(13)
 		timerPlasmaBlastCD:Start(23)
 		timerNextFlameSuppressantP1:Start("v73-83")	-- AC: 60s after MK II engages (+13s intro), slips when Plasma Blast/Proximity Mines are mid-cast
 		timerProximityMines:Start(19)
