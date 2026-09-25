@@ -5,6 +5,10 @@ mod:SetRevision("20268317220131")
 mod:SetCreatureID(33288)
 mod:SetEncounterID(756)
 mod:RegisterCombat("combat_yell", L.YellPull)
+--The raid can drop combat during Sara's transform dialogue: boss_yoggsaron.cpp spawns the P2
+--tentacles 18.5s after the lucid dream yell, and once the last Guardian dies nothing hostile touches
+--anyone until then. The default 5s wipe confirm ended the fight there and P2 never started.
+mod:SetWipeTime(18.5)
 mod:SetUsedIcons(1, 2, 3, 4, 5, 6, 7, 8)
 
 mod:RegisterEventsInCombat(
