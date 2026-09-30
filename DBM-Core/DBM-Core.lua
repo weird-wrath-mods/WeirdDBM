@@ -2436,7 +2436,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 6
+local WEIRD_DEFAULT_REV = 7
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2480,6 +2480,10 @@ local weirdDefaultMigrations = {
 	[6] = {
 		-- Mimiron Plasma Blast CD bar default ON for every spec (was tank-only); Napalm Shell target marking default ON
 		Mimiron = {"Timer64529cd2", "SetIconOnNapalm"},
+	},
+	[7] = {
+		-- Algalon Phase Punch debuff bar default OFF (tanks swap on a fixed count; the next-punch count bar covers it)
+		Algalon = {"Timer64412target"},
 	},
 }
 

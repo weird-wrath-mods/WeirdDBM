@@ -42,8 +42,8 @@ local timerBigBangCast			= mod:NewCastTimer(8, 64584, nil, nil, nil, 2, nil, DBM
 local timerNextCollapsingStar	= mod:NewTimer(60, "NextCollapsingStar", "Interface\\Icons\\INV_Enchant_EssenceCosmicGreater", nil, nil, 2, DBM_COMMON_L.HEALER_ICON)
 local timerCDCosmicSmash		= mod:NewCDTimer(25.5, 64596, nil, nil, nil, 3)
 local timerCastCosmicSmash		= mod:NewCastTimer(4.5, 64596)
-local timerPhasePunch			= mod:NewTargetTimer(45, 64412, nil, "Tank", 2, 5, nil, DBM_COMMON_L.TANK_ICON)
-local timerNextPhasePunch		= mod:NewNextTimer(15.5, 64412, nil, "Tank", 2, 5, nil, DBM_COMMON_L.TANK_ICON)
+local timerPhasePunch			= mod:NewTargetTimer(45, 64412, nil, false, 2, 5, nil, DBM_COMMON_L.TANK_ICON)
+local timerNextPhasePunch		= mod:NewNextCountTimer(15.5, 64412, nil, "Tank", 2, 5, nil, DBM_COMMON_L.TANK_ICON, true)
 local enrageTimer				= mod:NewBerserkTimer(360, nil, nil, nil, false) -- berserk default OFF
 local timerCombatStart 			= mod:NewTimer(26, "TimerCombatStart", "Interface\\Icons\\ability_warrior_offensivestance")
 
@@ -53,12 +53,24 @@ local stars_hp = {}
 local star_num = 1
 mod.vb.warned_preP2 = false
 
+-- Big Bang can hold a punch past its timer; the kept bar waits at 0 for at most 12s (8s cast plus
+-- Algalon getting back into melee range).
+local function stopNextPunch()
+	timerNextPhasePunch:Stop()
+end
+
+local function startNextPunch(self, count)
+	timerNextPhasePunch:Start(15.5, count)
+	self:Unschedule(stopNextPunch)
+	self:Schedule(15.5 + 12, stopNextPunch)
+end
+
 local function matches(msg, str)
 	return str ~= nil and (msg == str or msg:find(str, nil, true) ~= nil)
 end
  
 function mod:startTimers()
-	timerNextPhasePunch:Start(15.5)
+	startNextPunch(self, 1)
 	timerNextCollapsingStar:Start(16.5)
 	timerCDCosmicSmash:Start(26)
 	announcePreBigBang:Cancel()
@@ -118,7 +130,7 @@ end
 function mod:SPELL_AURA_APPLIED(args)
 	if args.spellId == 64412 then
 		local amount = args.amount or 1
-		timerNextPhasePunch:Start()
+		startNextPunch(self, amount + 1)	-- stack the next punch applies unless tanks swap
 		if args:IsPlayer() and amount >= 4 then
 			specWarnPhasePunch:Show(amount)
 			specWarnPhasePunch:Play("stackhigh")
