@@ -3610,7 +3610,6 @@ do
 		end
 		local name = DBM:GetFullPlayerNameByGUID(iconSetPerson[optionName]) or CL.UNKNOWN
 		DBM:Debug(name.." was elected icon setter for "..optionName, 2)
-		DBM:AddMsg(name.." was elected icon setter for "..optionName)
 	end
 
 	syncHandlers["DBMv4-Kill"] = function(_, cId)
