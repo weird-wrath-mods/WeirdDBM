@@ -141,6 +141,8 @@ L:SetTimerLocalization({
 L:SetOptionLocalization({
 	NextCollapsingStar		= "Show timer for next Collapsing Star",
 	TimerCombatStart		= "Show timer for start of combat",
+	HealthFrame				= "Show Collapsing Star health bars",
+	SetIconOnStars			= "Set icons on Stars: requires a raid assist mouseover the stars or observe others doing it",
 	warnStarLow				= "Show special warning when Collapsing Star is low (at ~25%)"
 })
 
@@ -152,6 +154,11 @@ L:SetMiscLocalization({
 	Emote_CollapsingStar	= "%s begins to Summon Collapsing Stars!",
 	Phase2					= "Behold the tools of creation!",
 	CollapsingStar			= "Collapsing Star",
+	CollapsingStars			= "Collapsing Stars",
+	StarBar1				= "One",
+	StarBar2				= "Two",
+	StarBar3				= "Three",
+	StarBar4				= "Four",
 	PullCheck				= "Time until Algalon transmits distress signal= (%d+) min."
 })
 

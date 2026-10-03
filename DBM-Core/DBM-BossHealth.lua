@@ -90,7 +90,10 @@ local onHide = onMouseUp
 -----------------
 -- Apply Style --
 -----------------
+local barHeight -- set per frame session by SetBarHeight; nil is the template's 20
+
 local function updateBarStyle(bar, id)
+	bar:SetHeight(barHeight or 20)
 	bar:ClearAllPoints()
 	if DBM.Options.HealthFrameGrowUp then
 		bar:SetPoint("BOTTOM", bars[id - 1] or anchor, "TOP", 0, 0)
@@ -267,6 +270,7 @@ end
 --  General Methods  --
 -----------------------
 function bossHealth:Show(name)
+	barHeight = nil -- a mod's SetBarHeight lasts until the frame is opened again
 	if not anchor then createFrame(bossHealth) end
 	header:SetText(name)
 	anchor:Show()
@@ -275,6 +279,12 @@ function bossHealth:Show(name)
 	if not bossHealth.ticker then
 		bossHealth.ticker = AceTimer:ScheduleRepeatingTimer(function() updateFrame(bossHealth) end, 0.5)
 	end
+end
+
+-- Height of each bar frame (default 20; the visible bar is 12, so this sets the gap). Applies to bars
+-- added afterwards; call it after the frame is shown.
+function bossHealth:SetBarHeight(height)
+	barHeight = height
 end
 
 function bossHealth:SetHeaderText(name)
