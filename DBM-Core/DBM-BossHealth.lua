@@ -90,16 +90,23 @@ local onHide = onMouseUp
 -----------------
 -- Apply Style --
 -----------------
-local barHeight -- set per frame session by SetBarHeight; nil is the template's 20
+-- The template's 20px bar frame holds a 12px bar, leaving an 8px gap between bars. A mod can shrink
+-- it per frame session (SetBarSpacing): frames after the first overlap by the difference.
+local TEMPLATE_GAP = 8
+local barOverlap = 0
+
+local function placeBar(bar, prev)
+	local overlap = prev and barOverlap or 0 -- the first bar keeps its place under the header
+	if DBM.Options.HealthFrameGrowUp then
+		bar:SetPoint("BOTTOM", prev or anchor, "TOP", 0, -overlap)
+	else
+		bar:SetPoint("TOP", prev or anchor, "BOTTOM", 0, overlap)
+	end
+end
 
 local function updateBarStyle(bar, id)
-	bar:SetHeight(barHeight or 20)
 	bar:ClearAllPoints()
-	if DBM.Options.HealthFrameGrowUp then
-		bar:SetPoint("BOTTOM", bars[id - 1] or anchor, "TOP", 0, 0)
-	else
-		bar:SetPoint("TOP", bars[id - 1] or anchor, "BOTTOM", 0, 0)
-	end
+	placeBar(bar, bars[id - 1])
 	local barborder = _G[bar:GetName().."BarBorder"]
 	local barbar = _G[bar:GetName().."Bar"]
 	local width = DBM.Options.HealthFrameWidth
@@ -270,8 +277,10 @@ end
 --  General Methods  --
 -----------------------
 function bossHealth:Show(name)
-	barHeight = nil -- a mod's SetBarHeight lasts until the frame is opened again
 	if not anchor then createFrame(bossHealth) end
+	-- a mod's SetBarSpacing/SetHeaderOffset last until the frame is opened again
+	barOverlap = 0
+	header:SetPoint("BOTTOM", anchor, "BOTTOM", 0, 0)
 	header:SetText(name)
 	anchor:Show()
 	bossHealth:Clear()
@@ -281,10 +290,14 @@ function bossHealth:Show(name)
 	end
 end
 
--- Height of each bar frame (default 20; the visible bar is 12, so this sets the gap). Applies to bars
--- added afterwards; call it after the frame is shown.
-function bossHealth:SetBarHeight(height)
-	barHeight = height
+-- Visible gap in px between bars (template: 8). Applies to bars placed afterwards; call after Show.
+function bossHealth:SetBarSpacing(gap)
+	barOverlap = TEMPLATE_GAP - gap
+end
+
+-- Moves the header text up (positive) or down from its default spot. Call after Show.
+function bossHealth:SetHeaderOffset(y)
+	if header then header:SetPoint("BOTTOM", anchor, "BOTTOM", 0, y) end
 end
 
 function bossHealth:SetHeaderText(name)
@@ -350,11 +363,7 @@ function bossHealth:RemoveBoss(cId)
 		if bar.id == cId or type(bar.id) == "table" and checkEntry(bar.id, cId) or type(bar.id) == "function" and (_G[bar:GetName().."BarName"]):GetText() == cId then
 			if bars[i + 1] then
 				local next = bars[i + 1]
-				if DBM.Options.HealthFrameGrowUp then
-					next:SetPoint("BOTTOM", bars[i - 1] or anchor, "TOP", 0, 0)
-				else
-					next:SetPoint("TOP", bars[i - 1] or anchor, "BOTTOM", 0, 0)
-				end
+				placeBar(next, bars[i - 1])
 			end
 			bar:Hide()
 			bar:ClearAllPoints()
@@ -381,11 +390,7 @@ function bossHealth:RemoveLowest()
 		if bar.id == index or type(bar.id) == "table" and checkEntry(bar.id, index) or type(bar.id) == "function" and (_G[bar:GetName().."BarName"]):GetText() == index then
 			if bars[i + 1] then
 				local next = bars[i + 1]
-				if DBM.Options.HealthFrameGrowUp then
-					next:SetPoint("BOTTOM", bars[i - 1] or anchor, "TOP", 0, 0)
-				else
-					next:SetPoint("TOP", bars[i - 1] or anchor, "BOTTOM", 0, 0)
-				end
+				placeBar(next, bars[i - 1])
 			end
 			bar:Hide()
 			bar:ClearAllPoints()

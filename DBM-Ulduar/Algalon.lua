@@ -347,7 +347,8 @@ function mod:OnCombatStart(delay)
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:RegisterEvent(e) end
 	DBM.BossHealth:SetHeaderText(L.CollapsingStars) -- DBM-Core opened it under Algalon's name just before this
-	DBM.BossHealth:SetBarHeight(16) -- tighter than the default 20 for 4 stacked star bars
+	DBM.BossHealth:SetBarSpacing(6) -- 4 stacked star bars: a bit under the default 8px gap
+	DBM.BossHealth:SetHeaderOffset(2) -- a little clear of the first bar
 	starMarks = pickStarMarks()
 	for i = 1, STAR_COUNT do
 		local row = {index = i}
