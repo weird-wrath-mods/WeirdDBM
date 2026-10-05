@@ -38,6 +38,7 @@ local timerP2toP3					= mod:NewTimer(17, "TimeToPhase3", nil, nil, nil, 6)
 local timerP3toP4					= mod:NewTimer(26.8, "TimeToPhase4", nil, nil, nil, 6)
 
 mod:AddRangeFrameOption("6")
+mod:AddBoolOption("HealthFrame", true) -- phase 4 only: all three parts up at once
 
 -- Stage One
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1)..": "..L.MobPhase1)
@@ -161,8 +162,7 @@ local function NextPhase(self)
 	self:SetStage(0)
 	if self.vb.phase == 1 then
 		if self.Options.HealthFrame then
-			DBM.BossHealth:Clear()
-			DBM.BossHealth:AddBoss(33432, L.MobPhase1)
+			DBM.BossHealth:Hide() -- core opens it on pull; the bars only matter once all three parts are up in phase 4
 		end
 	elseif self.vb.phase == 2 then
 		timerNextShockBlast:Stop()
@@ -174,10 +174,6 @@ local function NextPhase(self)
 		timerNextP3Wx2LaserBarrage:Schedule(42.75, 30)
 		timerHeatWaveCD:Start(52.75, 1)
 		timerRocketStrikeCD:Start(58.75)
-		if self.Options.HealthFrame then
-			DBM.BossHealth:Clear()
-			DBM.BossHealth:AddBoss(33651, L.MobPhase2)
-		end
 		if self.Options.RangeFrame then
 			DBM.RangeCheck:Hide()
 		end
@@ -200,10 +196,6 @@ local function NextPhase(self)
 		-- AC: yell +17s ACU attacks, +15s summon cast starts, +2s cast finishes
 		timerBombBotSpawn:Start(34)
 		self:Schedule(34, BombBotLoop, self)
-		if self.Options.HealthFrame then
-			DBM.BossHealth:Clear()
-			DBM.BossHealth:AddBoss(33670, L.MobPhase3)
-		end
 	elseif self.vb.phase == 4 then
 		-- Don't change loot if it was manually changed
 		if self.Options.AutoChangeLootToFFA and DBM:GetRaidRank() == 2 and GetLootMethod() == "freeforall" and cachedLootmethod then

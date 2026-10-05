@@ -2436,7 +2436,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 8
+local WEIRD_DEFAULT_REV = 9
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2488,6 +2488,10 @@ local weirdDefaultMigrations = {
 	[8] = {
 		-- Algalon health frame default ON: Collapsing Star bars are counted from the combat log now
 		Algalon = {"HealthFrame"},
+	},
+	[9] = {
+		-- Mimiron health frame default ON: phase 4 parts only, everyone is targeting one of them
+		Mimiron = {"HealthFrame"},
 	},
 }
 
