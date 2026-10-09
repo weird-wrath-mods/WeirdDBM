@@ -1,7 +1,7 @@
 local mod	= DBM:NewMod("Algalon", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20261003000000")
+mod:SetRevision("20261008000000")
 mod:SetCreatureID(32871)
 mod:SetEncounterID(757)
 mod:RegisterCombat("yell", L.YellPull)
@@ -58,12 +58,14 @@ mod.vb.warned_preP2 = false
 -- Collapsing Star health, counted from the combat log because almost nobody targets the stars.
 -- Server (boss_algalon_the_observer.cpp, creature_template 32955/34215): 88200 HP in 10, 176400 in 25,
 -- and Collapse (62018) takes 1% of max per second through DealDamage, which is never logged. Each
--- summon emote tops the stars back up to 4. A client inside a Black Hole (62169) is phased and gets
--- no star damage, so clients sync estimates and keep the lowest: missed damage only ever inflates one.
+-- summon emote tops the stars back up to 4. Each star keeps its damage HP: max minus all damage seen,
+-- with Collapse never in it, so it holds only what was observed (hits, unit reads). A client inside a
+-- Black Hole (62169) is phased and gets no star damage, so clients sync damage HP and keep the lowest:
+-- missed damage only ever raises it.
 local STAR_GUID = "0xF1300080BB" -- creature 32955 (the 25-man entry keeps the base entry in the GUID)
 local STAR_COUNT, STAR_SYNC_EVERY, STAR_DEAD_SYNC_FOR = 4, 2, 10
 local starMax = 88200
-local starSlots = {} -- {name, hp, t, wave, guid, dead, warned}: hp is health at time t, before decay
+local starSlots = {} -- {hp, spawn, scheduled, wave, guid, dead, warned}: hp is damage HP
 local starByGuid = {}
 local starDiedAt = {} -- guid -> time; synced as 0 so a phased client still learns about the death
 local starRows = {} -- the 4 bars, which never move; row.star is the star shown, if any
@@ -87,8 +89,21 @@ local function pickStarMarks()
 end
 local playerGUID, phased, lastStarSync = nil, false, 0
 
+-- Collapse taken so far: a tick every whole second after the summon (the wave's emote); in the logs,
+-- decay deaths in one wave land whole seconds apart, within 0.2s. A star bound without its emote
+-- (late join, reload) has no tick schedule and decays smoothly from when we first saw it.
+local function collapsed(s, now)
+	if s.scheduled then return starMax * 0.01 * math.floor(now - s.spawn) end
+	return starMax * 0.01 * (now - s.spawn)
+end
+
 local function starHP(s, now)
-	return s.hp - starMax * 0.01 * (now - s.t)
+	return s.hp - collapsed(s, now)
+end
+
+-- The next Collapse tick, or nil for a star without a tick schedule
+local function nextTick(s, now)
+	return s.scheduled and s.spawn + math.floor(now - s.spawn) + 1
 end
 
 -- Raid mark from combat log unit flags (COMBATLOG_OBJECT_RAIDTARGET1..8 = 0x00100000..0x08000000)
@@ -99,9 +114,60 @@ local function raidMark(flags)
 	end
 end
 
+-- Hold zone: a star that decays to 0 while the raid is phased in a Black Hole for Big Bang explodes
+-- on nobody. Logs: raiders are phased by about T+6 (T = cast start) and released at T+9.0 to T+9.6.
+-- Collapse is 1%/s, so a star left alone at h% dies in about h seconds; the target is the middle.
+local HOLD_FROM, HOLD_TO, BIG_BANG_EVERY = 6, 9, 90.5
+local bigBangAt -- start of the Big Bang the zone aims at: the one casting now, else the next one
+local GREEN, YELLOW, BLUE, RED = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}, {0.25, 0.55, 0.95}, {0.85, 0.2, 0.2}
+
+local function seg(from, to, c, a) return {from, to, c[1], c[2], c[3], a} end
+local function kHP(hp) return ("%.1fk"):format(hp / 1000) end
+
+-- The two numbers the raid works from, in HP, exact against the tick schedule. The target is always
+-- the 2 Collapse ticks either side of the middle of the window (T+7.5): they land within T+6.5..T+8.5,
+-- 0.5s or more inside it whatever the schedule, so the leeway is the same 2 ticks every Big Bang.
+-- A star with HP at most k ticks dies on the k-th coming tick or sooner, so:
+--   padding: HP above the most it can have and still die on the later target tick
+--   left:    HP above the most it can have and still miss both target ticks (red at 0)
+-- Both move only when the star is hit, by exactly the damage.
+local function holdNumbers(s, now, hp)
+	local tick, mid = starMax * 0.01, (HOLD_FROM + HOLD_TO) / 2
+	local nt = nextTick(s, now)
+	if not nt then -- no tick schedule: smooth decay, the same 2s target
+		return hp - (bigBangAt + mid + 1 - now) * tick, hp - (bigBangAt + mid - 1 - now) * tick
+	end
+	local k = math.floor(bigBangAt + mid - nt) + 1 -- last tick at or before T+7.5; it and the next are the target
+	return hp - (k + 1) * tick, hp - (k - 1) * tick
+end
+
+-- Bar position, in % of max: smooth between hits and moved by exactly the damage of each hit, so
+-- the zone colours can be placed against it without flickering on Collapse ticks
+local function starBarPct(s, now, hp)
+	local nt, tick = nextTick(s, now), starMax * 0.01
+	if not nt then return hp / tick end
+	return nt - now + hp / tick - 1
+end
+
 local function starBarValue(s)
 	if not s then return 0 end -- empty bar
-	return math.max(starHP(s, GetTime()) / starMax * 100, 0), s.icon
+	local now = GetTime()
+	local hp = starHP(s, now)
+	if hp <= 0 then return 0, s.icon end
+	local h = math.max(starBarPct(s, now, hp), 0)
+	while bigBangAt and now > bigBangAt + HOLD_TO do bigBangAt = bigBangAt + BIG_BANG_EVERY end
+	if not bigBangAt or bigBangAt + HOLD_FROM - now >= 100 then return h, s.icon, {segs = {seg(0, h, GREEN)}} end -- zone not on the bar yet
+	local padding, left = holdNumbers(s, now, hp)
+	-- colours are placed from the numbers, so the bar can never disagree with them
+	local tick = starMax * 0.01
+	local mid, lo = h - padding / tick, h - left / tick
+	if left <= 0 then -- hit through the zone: it dies before the raid is phased
+		return h, s.icon, {segs = {seg(0, h, RED), seg(lo, mid, YELLOW, 0.3)}}
+	elseif padding <= 0 then -- leave it alone; the number is what it can still take before going red
+		return h, s.icon, {segs = {seg(0, lo, GREEN), seg(lo, h, YELLOW), seg(h, mid, YELLOW, 0.3)}, text = "|cfff2cc26" .. kHP(left) .. "|r"}
+	end
+	-- padding: damage still to deal before it dies on a target tick
+	return h, s.icon, {segs = {seg(0, lo, GREEN), seg(lo, mid, YELLOW), seg(mid, h, BLUE)}, text = "|cff6aa8ff" .. kHP(padding) .. "|r"}
 end
 
 -- A star takes the first free bar; with more than 4 known at once (a misjudged wave) it goes unshown
@@ -119,7 +185,7 @@ local function hideStar(s)
 end
 
 local function addStarSlot(now, wave)
-	local s = {hp = starMax, t = now, wave = wave}
+	local s = {hp = starMax, spawn = now, scheduled = wave ~= nil, wave = wave}
 	starSlots[#starSlots + 1] = s
 	if wave then wave.slots[#wave.slots + 1] = s end
 	showStar(s)
@@ -198,28 +264,48 @@ local function starDied(guid, now)
 	starDiedAt[guid] = now
 end
 
-local function correctStar(guid, hp, now, exact)
+-- A unit read is the HP right now: taken as is
+local function readStar(guid, hp, now)
 	local s = getStar(guid, now)
-	if not s or s.dead then return end
-	if exact or hp < starHP(s, now) then
-		s.hp, s.t = hp, now
-	end
+	if s and not s.dead then s.hp = hp + collapsed(s, now) end
+end
+
+-- Another client's damage HP: lower means it saw damage we missed. A star without a tick schedule
+-- has a damage HP of its own making, so it neither sends nor takes one.
+local function syncStar(guid, hp, now)
+	local s = getStar(guid, now)
+	if s and not s.dead and s.scheduled and hp < s.hp then s.hp = hp end
 end
 
 local function clearStars()
 	starSlots, starByGuid, starDiedAt, starRows = {}, {}, {}, {}
 end
 
+-- A raid mark sits on one unit at a time, so a star taking a mark takes it off any other star
+local function setStarIcon(s, icon)
+	if icon then
+		for _, other in ipairs(starSlots) do
+			if other ~= s and other.icon == icon then other.icon = nil end
+		end
+	end
+	s.icon = icon
+end
+
 -- A mark we just set only shows in GetRaidTargetIndex and hit flags once the server confirms it; an
--- unmarked reading in that gap must not undo it
-local function seeStarIcon(s, icon, now)
-	if icon or not s.markedAt or now - s.markedAt > 1 then s.icon = icon end
+-- unmarked reading in that gap must not undo it. Hit flags (fromLog) never clear a mark: the client
+-- leaves the mark bits out when not in a group (solo test logs: 0 of 582 hits on marked stars).
+local function seeStarIcon(s, icon, now, fromLog)
+	if icon then
+		setStarIcon(s, icon)
+	elseif not fromLog and (not s.markedAt or now - s.markedAt > 1) then
+		s.icon = nil
+	end
 end
 
 local function readStarUnit(uId, now)
 	local guid = UnitGUID(uId)
 	if guid and guid:sub(1, #STAR_GUID) == STAR_GUID and UnitHealthMax(uId) > 0 and not UnitIsDead(uId) then
-		correctStar(guid, UnitHealth(uId) / UnitHealthMax(uId) * starMax, now, true)
+		readStar(guid, UnitHealth(uId) / UnitHealthMax(uId) * starMax, now)
 		local s = starByGuid[guid]
 		if s then
 			seeStarIcon(s, GetRaidTargetIndex(uId), now)
@@ -244,7 +330,8 @@ local function sendStarSync(now)
 	local parts = {}
 	for _, s in ipairs(starSlots) do
 		if not s.dead and s.guid then
-			parts[#parts + 1] = s.guid:sub(#STAR_GUID + 1) .. ":" .. math.floor(math.max(starHP(s, now), 1)) .. (s.icon and ":" .. s.icon or "")
+			local hp = s.scheduled and math.floor(math.max(s.hp, 1)) or "" -- "" : mark only
+			parts[#parts + 1] = s.guid:sub(#STAR_GUID + 1) .. ":" .. hp .. (s.icon and ":" .. s.icon or "")
 		end
 	end
 	for guid, t in pairs(starDiedAt) do
@@ -252,7 +339,7 @@ local function sendStarSync(now)
 	end
 	if parts[1] then
 		lastStarSync = now
-		mod:SendSync("StarHP", table.concat(parts, ","))
+		mod:SendSync("StarDmgHP", table.concat(parts, ",")) -- not "StarHP": older clients sent current HP
 	end
 end
 
@@ -262,7 +349,7 @@ hooksecurefunc("SetRaidTarget", function(unit, icon)
 	local s = starByGuid[UnitGUID(unit) or ""]
 	if s and not s.dead then
 		local now = GetTime()
-		s.icon = icon ~= 0 and icon or nil
+		setStarIcon(s, icon ~= 0 and icon or nil)
 		s.markedAt = s.icon and now
 		sendStarSync(now)
 	end
@@ -294,7 +381,7 @@ function onStarLog(event, _, _, _, destGUID, _, destFlags, a1, a2, a3, a4, a5)
 		if event == "SPELL_AURA_APPLIED" then phased = true elseif event == "SPELL_AURA_REMOVED" then phased = false end
 	end
 	if not destGUID or destGUID:sub(1, #STAR_GUID) ~= STAR_GUID then return end
-	if starByGuid[destGUID] then seeStarIcon(starByGuid[destGUID], raidMark(destFlags), now) end
+	if starByGuid[destGUID] then seeStarIcon(starByGuid[destGUID], raidMark(destFlags), now, true) end
 	local amount, overkill
 	if event == "SWING_DAMAGE" then
 		amount, overkill = a1, a2
@@ -309,7 +396,7 @@ function onStarLog(event, _, _, _, destGUID, _, destFlags, a1, a2, a3, a4, a5)
 	local s = getStar(destGUID, now)
 	if s and not s.dead then
 		s.hp = s.hp - (amount - math.max(overkill or 0, 0))
-		seeStarIcon(s, raidMark(destFlags), now)
+		seeStarIcon(s, raidMark(destFlags), now, true)
 	end
 end
 
@@ -336,6 +423,7 @@ function mod:startTimers()
 	announcePreBigBang:Cancel()
 	announcePreBigBang:Schedule(80)
 	timerNextBigBang:Start(90)
+	bigBangAt = GetTime() + 90
 	enrageTimer:Start(360)
 end
 
@@ -343,7 +431,7 @@ function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	clearStars()
 	starMax = self:IsDifficulty("normal25") and 176400 or 88200
-	playerGUID, phased, lastStarSync = UnitGUID("player"), false, 0
+	playerGUID, phased, lastStarSync, bigBangAt = UnitGUID("player"), false, 0, nil
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:RegisterEvent(e) end
 	DBM.BossHealth:SetHeaderText(L.CollapsingStars) -- DBM-Core opened it under Algalon's name just before this
@@ -378,6 +466,7 @@ function mod:SPELL_CAST_START(args)
 	if args:IsSpellID(64584, 64443) then	-- Big Bang
 		timerBigBangCast:Start()
 		timerNextBigBang:Start()
+		bigBangAt = GetTime()
 		announcePreBigBang:Cancel()
 		announcePreBigBang:Schedule(80.5)
 		specWarnBigBang:Show()
@@ -447,17 +536,17 @@ function mod:UNIT_HEALTH(uId)
 end
 
 function mod:OnSync(msg, payload, sender)
-	if msg ~= "StarHP" or sender == UnitName("player") or not payload then return end
+	if msg ~= "StarDmgHP" or sender == UnitName("player") or not payload then return end
 	local now = GetTime()
-	for suffix, hp, icon in payload:gmatch("(%x+):(%d+):?(%d*)") do
+	for suffix, hp, icon in payload:gmatch("(%x+):(%d*):?(%d*)") do
 		local guid, hp = STAR_GUID .. suffix, tonumber(hp)
 		if hp == 0 then
 			starDied(guid, now)
 		else
-			correctStar(guid, hp, now)
+			if hp then syncStar(guid, hp, now) else getStar(guid, now) end
 			-- a mark we saw ourselves (hit flags, our own units) wins; this fills in stars we never saw marked
 			local s = starByGuid[guid]
-			if s and not s.icon then s.icon = tonumber(icon) end
+			if s and not s.icon and tonumber(icon) then setStarIcon(s, tonumber(icon)) end
 		end
 	end
 end
