@@ -350,6 +350,7 @@ L:SetOptionLocalization({
 	TimeToPhase3			= "Show timer for Phase 3",
 	TimeToPhase4			= "Show timer for Phase 4",
 	HealthFrame				= "Show health bars for the three parts in Phase 4",
+	HealthFrameAllPhases	= "Also show the health bar in Phases 1 to 3",
 	MagneticCore			= "Announce Magnetic Core looters",
 	AutoChangeLootToFFA		= "Switch loot mode to Free for All in Phase 3",
 	WarnBombSpawn			= "Show warning for Bomb Bots",
