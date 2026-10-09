@@ -169,8 +169,8 @@ local function createBar(self, name, ...) -- the vararg will also contain the na
 	bartext:SetText(name or "")
 	bar.nameused = name and true or nil
 	if type(bar.id) == "function" then
-		local health, icon = bar.id()
-		updateBar(bar, health, icon, true)
+		local health, icon, style = bar.id()
+		updateBar(bar, health, icon, true, nil, style)
 	else
 		updateBar(bar, 100)
 	end
@@ -182,7 +182,34 @@ end
 ------------------
 --  Bar Update  --
 ------------------
-function updateBar(bar, percent, icon, dontShowDead, name)
+-- segs: {from%, to%, r, g, b[, a]} drawn in place of the normal fill. Every update redraws or hides
+-- them, so a bar recycled from the cache never keeps another mod's segments.
+local function drawSegments(bar, barbar, segs)
+	bar.segs = bar.segs or {}
+	local w, n = barbar:GetWidth(), 0
+	for _, seg in ipairs(segs or {}) do
+		local from, to = math.max(seg[1], 0), math.min(seg[2], 100)
+		if to > from then
+			n = n + 1
+			local tex = bar.segs[n]
+			if not tex then
+				tex = barbar:CreateTexture(nil, "BORDER") -- over the background, under the text
+				tex:SetTexture("Interface\\PaperDollInfoFrame\\UI-Character-Skills-Bar")
+				bar.segs[n] = tex
+			end
+			tex:ClearAllPoints()
+			tex:SetPoint("TOPLEFT", barbar, "TOPLEFT", w * from / 100, 0)
+			tex:SetPoint("BOTTOMLEFT", barbar, "BOTTOMLEFT", w * from / 100, 0)
+			tex:SetWidth(w * (to - from) / 100)
+			tex:SetVertexColor(seg[3], seg[4], seg[5], seg[6] or 1)
+			tex:Show()
+		end
+	end
+	for i = n + 1, #bar.segs do bar.segs[i]:Hide() end
+end
+
+-- style (generic bars only): {segs = see drawSegments, text = shown before the percent}
+function updateBar(bar, percent, icon, dontShowDead, name, style)
 	if not percent then return end
 	local barName = bar:GetName()
 	local bartimer = _G[barName .. "BarTimer"]
@@ -220,6 +247,9 @@ function updateBar(bar, percent, icon, dontShowDead, name)
 	if name and not bar.nameused then
 		bartext:SetText(name)
 	end
+	if style and style.segs then barbar:SetValue(0) end
+	drawSegments(bar, barbar, style and style.segs)
+	if style and style.text then bartimer:SetText(style.text .. " " .. (bartimer:GetText() or "")) end
 end
 
 do
@@ -266,8 +296,8 @@ do
 					end
 				end
 			elseif type(v.id) == "function" then -- generic bars
-				local health, icon = v.id()
-				updateBar(v, health, icon, true)
+				local health, icon, style = v.id()
+				updateBar(v, health, icon, true, nil, style)
 			end
 		end
 	end
