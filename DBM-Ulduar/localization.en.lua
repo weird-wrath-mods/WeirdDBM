@@ -433,6 +433,7 @@ L:SetOptionLocalization({
 	GuardianAfter					= "Show a second timer for the Guardian of Yogg-Saron spawn after next (Phase 1)",
 	NextImmortalGuardian			= "Show timer for next Immortal Guardian spawn (Phase 3)",
 	ShowSaraHealth					= "Show health frame for Sara in Phase 1 (must be targeted or focused by at least one raid member)",
+	HealthFrame						= "Show Brain and Crusher Tentacle health bars from Phase 2, shared across the raid",
 	MaladyArrow						= "Show DBM arrow when $spell:63881 is near you"
 })
 
@@ -451,6 +452,8 @@ L:SetMiscLocalization({
 	InfluenceTentacle	= "Influence Tentacle",
 	LaughingSkull		= "Laughing Skull",
 	BrainofYoggSaron	= "Brain of Yogg-Saron",
+	BrainBar			= "Brain",
+	CrusherBar			= "Crusher",
 	S3TrueFaceofDeath	= "Stage Three: True Face of Death",
 	YoggSaron			= "Yogg-Saron",
 	ImmortalGuardian	= "Immortal Guardian"
