@@ -304,7 +304,7 @@ end
 local BRAIN_GUID, CRUSHER_GUID = "0xF130008462", "0xF1300084AE" -- 33890, 33966
 local CRUSHER_ROWS, OBSERVED_SYNC_EVERY = 3, 1
 local observed = {} -- guid -> {hp, max, dead, row, new}: lowest HP seen; new = our own low, not yet sent
-local crusherRows = {} -- fixed bars, so a crusher keeps its row; row.guid is the crusher shown
+local crusherRows = {} -- up to 3 bars, each only while it has a crusher (row.guid); a crusher keeps its row
 local brainBar -- the brain bar's function, which is its id in BossHealth
 local brainGUID
 local lastObservedSync = 0
@@ -318,16 +318,41 @@ local function maxHP(guid)
 	return is25 and 2000000 or 400000
 end
 
+local function observedPct(guid, unseen)
+	local rec = guid and observed[guid]
+	if not rec or rec.hp == math.huge then return unseen end
+	if rec.dead then return 0 end
+	return rec.hp / (rec.max or maxHP(guid)) * 100
+end
+
+-- A row's bar exists only while it shows a crusher. In phase 3 the frame goes when the last one does,
+-- and a crusher nobody had noticed until then brings it back.
+local function ensureRowBar(row)
+	if row.bar then return end
+	if not DBM.BossHealth:IsShown() then
+		if mod.vb.phase ~= 3 then return end -- phase 2: closed by hand, leave it closed
+		DBM.BossHealth:Show(L.name)
+	end
+	row.bar = function() return observedPct(row.guid, 0) end
+	DBM.BossHealth:AddBoss(row.bar, L.CrusherBar)
+end
+
 -- A crusher takes the first free row; any beyond 3 wait, oldest (lowest GUID) first
 local function fillCrusherRows()
 	for _, row in ipairs(crusherRows) do
 		if row.guid and observed[row.guid].dead then row.guid = nil end
-		if not row.guid and row.bar then -- a row removed in phase 3 stays gone
+		if not row.guid then
 			local pick
 			for guid, rec in pairs(observed) do
 				if isCrusher(guid) and not rec.dead and not rec.row and (not pick or guid < pick) then pick = guid end
 			end
-			if pick then row.guid, observed[pick].row = pick, row end
+			if pick then
+				row.guid, observed[pick].row = pick, row
+				ensureRowBar(row)
+			elseif row.bar then
+				DBM.BossHealth:RemoveBoss(row.bar)
+				row.bar = nil
+			end
 		end
 	end
 end
@@ -383,13 +408,6 @@ local function sendObserved(now)
 	end
 end
 
-local function observedPct(guid, unseen)
-	local rec = guid and observed[guid]
-	if not rec or rec.hp == math.huge then return unseen end
-	if rec.dead then return 0 end
-	return rec.hp / (rec.max or maxHP(guid)) * 100
-end
-
 -- Phase 3 starts when the brain drops below 30% (boss_yoggsaron.cpp HealthBelowPctDamaged(30); every
 -- logged pull that got there stopped at 29.9-30.5%), so that part of the bar is yellow
 local BRAIN_P3_PCT = 30
@@ -408,28 +426,17 @@ local function showObservedBars()
 	DBM.BossHealth:Show(L.name)
 	brainBar = brainBarValue
 	DBM.BossHealth:AddBoss(brainBar, L.BrainBar)
-	for i = 1, CRUSHER_ROWS do
-		local row = {}
-		row.bar = function() return observedPct(row.guid, 0) end
-		crusherRows[i] = row
-		DBM.BossHealth:AddBoss(row.bar, L.CrusherBar)
-	end
+	for i = 1, CRUSHER_ROWS do crusherRows[i] = {} end -- bars come with the crushers
 	fillCrusherRows()
 end
 
--- Phase 3: the brain no longer matters and no new crushers come, so only living crushers stay up
+-- Phase 3: the brain no longer matters, so only living crushers stay up
 local function trimForPhase3()
 	if brainBar then DBM.BossHealth:RemoveBoss(brainBar) brainBar = nil end
-	local any
 	for _, row in ipairs(crusherRows) do
-		if row.guid then
-			any = true
-		elseif row.bar then
-			DBM.BossHealth:RemoveBoss(row.bar)
-			row.bar = nil
-		end
+		if row.bar then return end
 	end
-	if not any then DBM.BossHealth:Hide() end
+	DBM.BossHealth:Hide()
 end
 
 mod:RegisterOnUpdateHandler(function(self)
