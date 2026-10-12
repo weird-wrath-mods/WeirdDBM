@@ -22,7 +22,7 @@ mod:RegisterEventsInCombat(
 -- General
 local enrageTimerStage1				= mod:NewBerserkTimer(300, nil, DBM_CORE_L.GENERIC_TIMER_BERSERK..": "..DBM_CORE_L.SCENARIO_STAGE:format(1), nil, false) -- berserk default OFF
 local enrageTimerStage2				= mod:NewBerserkTimer(300, nil, DBM_CORE_L.GENERIC_TIMER_BERSERK..": "..DBM_CORE_L.SCENARIO_STAGE:format(2), nil, false) -- berserk default OFF
-mod:AddRangeFrameOption("10")
+mod:AddRangeFrameOption("8")
 
 -- Stage One
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1))
@@ -75,7 +75,7 @@ function mod:OnCombatStart()
 	enrageTimerStage1:Start()
 	timerStormhammerCD:Start(28) 
 	if self.Options.RangeFrame then
-		DBM.RangeCheck:Show(10)
+		DBM.RangeCheck:Show(8)
 	end
 	table.wipe(lastcharge)
 end
