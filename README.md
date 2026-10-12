@@ -19,6 +19,12 @@ This project continues Balleny's DBM for Chromiecraft/AzerothCore based on the W
 
 - If you encounter any issues or miss features on bosses/dungeons please report them here on Github.
 
+## Install / update
+
+1. Download https://github.com/weird-wrath-mods/WeirdDBM/archive/refs/heads/main.zip
+2. Delete the old `DBM-*` folders in `Interface/AddOns` (your settings live in `WTF` and are kept).
+3. Copy the `DBM-*` folders from inside `WeirdDBM-main` into `Interface/AddOns`. Don't copy `WeirdDBM-main` itself.
+
 ## 🌟 Credit to:
 
 - [Zidras](https://github.com/Zidras/DBM-Warmane) 
@@ -26,6 +32,7 @@ This project continues Balleny's DBM for Chromiecraft/AzerothCore based on the W
 - Cafe/Proxi from TeaTime
 
 <details>
+<summary>Upstream DBM-Warmane readme</summary>
 <div align="center">
 
 # DBM-Warmane (3.3.5a)
