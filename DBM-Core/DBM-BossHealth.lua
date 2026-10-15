@@ -95,12 +95,22 @@ local onHide = onMouseUp
 local TEMPLATE_GAP = 8
 local barOverlap = 0
 
+-- A bar with a label (style.label) gets LABEL_SPACE more room above it for the text
+local LABEL_SPACE = 14
+
 local function placeBar(bar, prev)
 	local overlap = prev and barOverlap or 0 -- the first bar keeps its place under the header
-	if DBM.Options.HealthFrameGrowUp then
-		bar:SetPoint("BOTTOM", prev or anchor, "TOP", 0, -overlap)
+	if DBM.Options.HealthFrameGrowUp then -- the label sits between this bar and the one above it
+		bar:SetPoint("BOTTOM", prev or anchor, "TOP", 0, -overlap + (prev and prev.labelText and LABEL_SPACE or 0))
 	else
-		bar:SetPoint("TOP", prev or anchor, "BOTTOM", 0, overlap)
+		bar:SetPoint("TOP", prev or anchor, "BOTTOM", 0, overlap - (bar.labelText and LABEL_SPACE or 0))
+	end
+end
+
+local function placeAllBars()
+	for i, b in ipairs(bars) do
+		b:ClearAllPoints()
+		placeBar(b, bars[i - 1])
 	end
 end
 
@@ -168,6 +178,8 @@ local function createBar(self, name, ...) -- the vararg will also contain the na
 	bar:ClearAllPoints()
 	bartext:SetText(name or "")
 	bar.nameused = name and true or nil
+	bar.baseName, bar.suffixed, bar.labelText = name, nil, nil
+	if bar.label then bar.label:Hide() end
 	if type(bar.id) == "function" then
 		local health, icon, style = bar.id()
 		updateBar(bar, health, icon, true, nil, style)
@@ -249,7 +261,31 @@ function updateBar(bar, percent, icon, dontShowDead, name, style)
 	end
 	if style and style.segs then barbar:SetValue(0) end
 	drawSegments(bar, barbar, style and style.segs)
+	if style and style.valueText then bartimer:SetText(style.valueText) end -- in place of the percent
 	if style and style.text then bartimer:SetText(style.text .. " " .. (bartimer:GetText() or "")) end
+	-- generic bars can put a line of text above themselves; the bars move to make room
+	local label = style and style.label
+	if label ~= bar.labelText then
+		bar.labelText = label
+		if label then
+			bar.label = bar.label or bar:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+			bar.label:ClearAllPoints()
+			bar.label:SetPoint("BOTTOM", bar, "TOP", 0, 0) -- clear of the bar's border, which reaches into the frame's top 4px
+			bar.label:SetText(label)
+			bar.label:Show()
+		elseif bar.label then
+			bar.label:Hide()
+		end
+		placeAllBars()
+	end
+	-- generic bars can mark their name (an icon after it) and drop the mark again
+	if style and style.nameSuffix then
+		bartext:SetText((bar.baseName or "") .. style.nameSuffix)
+		bar.suffixed = true
+	elseif bar.suffixed then
+		bartext:SetText(bar.baseName or "")
+		bar.suffixed = nil
+	end
 end
 
 do
