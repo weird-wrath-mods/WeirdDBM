@@ -140,6 +140,7 @@ L:SetTimerLocalization({
 
 L:SetOptionLocalization({
 	NextCollapsingStar		= "Show timer for next Collapsing Star",
+	DoomCountdown			= "Show a countdown bar for when to cast Curse of Doom on stars (it lands in the Big Bang safe window), over the star bars",
 	TimerCombatStart		= "Show timer for start of combat",
 	HealthFrame				= "Show Collapsing Star health bars",
 	SetIconOnStars			= "Set icons on Stars: requires a raid assist mouseover the stars or observe others doing it",
@@ -159,6 +160,12 @@ L:SetMiscLocalization({
 	StarBar2				= "Two",
 	StarBar3				= "Three",
 	StarBar4				= "Four",
+	StarTooLow				= "TOO LOW",
+	StarStop				= "STOP",
+	StarDoomIn				= "DOOM IN %ds",
+	StarDoomNow				= "DOOM NOW",
+	CastDooms				= "Cast Dooms",
+	CastDoomsNow			= "NOW",
 	PullCheck				= "Time until Algalon transmits distress signal= (%d+) min."
 })
 
