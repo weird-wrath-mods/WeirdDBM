@@ -290,6 +290,10 @@ DBM.DefaultOptions = {
 	SpecialWarningPoint = "CENTER",
 	SpecialWarningX = 0,
 	SpecialWarningY = 75,
+	WarningSignPoint = "CENTER",
+	WarningSignX = 0,
+	WarningSignY = 160,
+	WarningSignScale = 1,
 	SpecialWarningFont = "standardFont",
 	SpecialWarningFontSize2 = 35,
 	SpecialWarningFontStyle = "THICKOUTLINE",
@@ -2436,7 +2440,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 10
+local WEIRD_DEFAULT_REV = 11
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2496,6 +2500,12 @@ local weirdDefaultMigrations = {
 	[10] = {
 		-- Yogg-Saron health frame default ON: Brain and Crusher Tentacle bars, shared across the raid
 		YoggSaron = {"HealthFrame"},
+	},
+	[11] = {
+		-- Mimiron Proximity Mines timer default OFF: the mines are visible on the ground, the timer only adds clutter.
+		-- Self-destruct (hard mode enrage) default OFF: missed by the rev 1 berserk sweep, it is a custom timer, not NewBerserkTimer
+		-- Frost Bomb Explosion cast bar default OFF (the Next Frost Bomb timer was already off)
+		Mimiron = {"Timer63027cd", "TimerHardmode", "Timer65333cast"},
 	},
 }
 
@@ -10522,7 +10532,7 @@ do
 				end
 			end
 			-- timerStringWithVariance checks for timer string sent from Start method, self.timerStringWithVariance is from newTimer constructor. Else, use timer value
-			bar = DBT:CreateBar(timerStringWithVariance or (hasVariance and self.timerStringWithVariance) or timer, id, self.icon, nil, nil, nil, nil, colorId, nil, self.keep, self.fade, countVoice, countVoiceMax, self.simpType == "cd" or self.simpType == "cdnp")
+			bar = DBT:CreateBar(timerStringWithVariance or (hasVariance and self.timerStringWithVariance) or timer, id, self.icon, self.huge, nil, nil, nil, colorId, nil, self.keep, self.fade, countVoice, countVoiceMax, self.simpType == "cd" or self.simpType == "cdnp")
 			if not bar then
 				return false, "error" -- creating the timer failed somehow, maybe hit the hard-coded timer limit of 15
 			end
