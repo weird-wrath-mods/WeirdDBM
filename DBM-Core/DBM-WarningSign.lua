@@ -9,7 +9,7 @@ DBM.WarningSign = {}
 --------------
 local sign = DBM.WarningSign
 local L = DBM_CORE_L
-local frame, texture, sweep, text, shown, endTime, moving
+local frame, texture, sweep, text, timeText, shown, endTime, moving
 
 --------------------
 --  Create Frame  --
@@ -32,7 +32,9 @@ local textFrame = CreateFrame("Frame", nil, frame)
 textFrame:SetAllPoints(frame)
 textFrame:SetFrameLevel(sweep:GetFrameLevel() + 1)
 text = textFrame:CreateFontString(nil, "OVERLAY", "ZoneTextFont")
-text:SetPoint("CENTER", frame, "CENTER", 0, 0)
+text:SetPoint("TOP", frame, "BOTTOM", 0, -4)
+timeText = textFrame:CreateFontString(nil, "OVERLAY", "ZoneTextFont")
+timeText:SetPoint("CENTER", frame, "CENTER", 0, 0)
 
 -- options load after this file, so the position is read when the sign shows
 function sign:UpdatePosition()
@@ -43,7 +45,9 @@ function sign:UpdatePosition()
 end
 
 frame:SetScript("OnUpdate", function(self)
-	if GetTime() >= endTime then
+	local left = endTime - GetTime()
+	timeText:SetText(left > 0 and math.ceil(left) or "")
+	if left <= 0 then
 		shown = nil
 		moving = nil
 		self:EnableMouse(false)

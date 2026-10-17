@@ -291,8 +291,8 @@ DBM.DefaultOptions = {
 	SpecialWarningX = 0,
 	SpecialWarningY = 75,
 	WarningSignPoint = "CENTER",
-	WarningSignX = 0,
-	WarningSignY = 160,
+	WarningSignX = 300,
+	WarningSignY = 250, -- up and right of centre, beside the raid warnings (CENTER +260)
 	WarningSignScale = 1,
 	SpecialWarningFont = "standardFont",
 	SpecialWarningFontSize2 = 35,
@@ -10532,7 +10532,7 @@ do
 				end
 			end
 			-- timerStringWithVariance checks for timer string sent from Start method, self.timerStringWithVariance is from newTimer constructor. Else, use timer value
-			bar = DBT:CreateBar(timerStringWithVariance or (hasVariance and self.timerStringWithVariance) or timer, id, self.icon, self.huge, nil, nil, nil, colorId, nil, self.keep, self.fade, countVoice, countVoiceMax, self.simpType == "cd" or self.simpType == "cdnp")
+			bar = DBT:CreateBar(timerStringWithVariance or (hasVariance and self.timerStringWithVariance) or timer, id, self.icon, nil, nil, nil, nil, colorId, nil, self.keep, self.fade, countVoice, countVoiceMax, self.simpType == "cd" or self.simpType == "cdnp")
 			if not bar then
 				return false, "error" -- creating the timer failed somehow, maybe hit the hard-coded timer limit of 15
 			end
