@@ -85,6 +85,15 @@ local function sortFails1C(e1, e2)
 	return (lastcharge[e1] or 0) > (lastcharge[e2] or 0)
 end
 
+-- AC: the strike event recasts on a flat Repeat(20s) whether or not the cast goes off, and a strike
+-- that doesn't go off logs nothing (logs: 48 gaps of 39-41s, one slot each). So if the strike due
+-- hasn't come 2s after its time, the bar moves on to the next slot.
+local STRIKE_EVERY, STRIKE_GRACE = 20, 2
+local function strikeMissed(self)
+	timerUnbalancingStrike:Start(STRIKE_EVERY - STRIKE_GRACE)
+	self:Schedule(STRIKE_EVERY, strikeMissed, self)
+end
+
 function mod:OnCombatEnd()
 	if self.Options.RangeFrame then
 		DBM.RangeCheck:Hide()
@@ -130,6 +139,8 @@ function mod:SPELL_CAST_SUCCESS(args)
 		timerLightningCharge:Start()
 	elseif spellId == 62130 then	-- Unbalancing Strike
 		timerUnbalancingStrike:Start()
+		self:Unschedule(strikeMissed)
+		self:Schedule(STRIKE_EVERY + STRIKE_GRACE, strikeMissed, self)
 	elseif args:IsSpellID(62580, 62604) then	-- Frostbolt Volley by Sif
 		timerFBVolley:Start()
 	end
