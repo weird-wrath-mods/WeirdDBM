@@ -14,7 +14,7 @@ mod:RegisterEvents(
 )
 mod:RegisterEventsInCombat(
 	"SPELL_CAST_START 62437 62859",
-	"SPELL_CAST_SUCCESS 62678 62873 62619 63571 62589 64587 64650 63601 62451 62865",
+	"SPELL_CAST_SUCCESS 62678 62873 62619 63571 62589 64587 64650 63601 62451 62865 62467",
 	"SPELL_AURA_APPLIED 62283 62438 62439 62861 62862 62930 62451 62865",
 	"SPELL_AURA_REMOVED 62519 62861 62438 63571 62589",
 	"UNIT_DIED",
@@ -84,6 +84,27 @@ mod.vb.waves = 0
 mod.vb.tremorCount = 0
 mod.vb.isHardMode = false
 
+-- AC: a wave every 60s, but the next comes 5s after the current wave's lashers or Conservator are all dead,
+-- and 16s after its trio is all down at once (each member gets back up 11s after it falls unless all three
+-- are down; the wave then ends 11s later, and the next comes 5s after that).
+local CONSERVATOR, LASHER = 33203, 32918
+local TRIO = {[33202] = true, [32916] = true, [32919] = true}
+local LASHERS_PER_WAVE, AFTER_CLEARED, AFTER_TRIO, TRIO_REVIVE = 10, 5, 16, 11
+local waveType, lashersDead, trioDownAt = nil, 0, {}
+local function waveCleared(after)
+	local left = timerAlliesOfNature:GetRemaining()
+	if left > after then timerAlliesOfNature:RemoveTime(left - after) end -- keeps the bar's length
+	waveType = nil
+end
+local function newWave(kind)
+	waveType, lashersDead = kind, 0
+	table.wipe(trioDownAt)
+	timerAlliesOfNature:Start()
+end
+
+-- AC: each living Elder casts Drained of Power on itself 5s after engage; its ability follows from engage
+local ELDER_ABILITY = {[32914] = {timerGroundTremorCD, 35, 1}, [32913] = {timerIronRootsCD, 20}, [32915] = {timerUnstableBeamCD, 60}}
+
 function mod:OnCombatStart(delay)
 	self.vb.altIcon = true
 	self.vb.iconId = 6
@@ -92,6 +113,8 @@ function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	timerEnrage:Start(-delay)
 	table.wipe(adds)
+	waveType, lashersDead = nil, 0
+	table.wipe(trioDownAt)
 	timerAlliesOfNature:Start(10-delay) -- 9.9
 	timerLifebinderCD:Start(30-delay) -- first 30s on AC
 end
@@ -118,6 +141,12 @@ function mod:SPELL_CAST_START(args)
 		timerGroundTremorCD:Start(nil, self.vb.tremorCount + 1)
 	end
 end
+
+-- AC (boss_freya.cpp): the first volley is thrown 5s after Attuned to Nature comes off, then every 18s;
+-- a bomb lands about 0.5s after it is thrown and explodes 6s after landing (logs: first explosion 11.4-12.5s
+-- after phase 2). Warnings and bars are for the landing.
+local BOMB_FIRST, BOMB_EVERY, BOMB_FUSE = 5.5, 18, 6
+
 
 function mod:SPELL_CAST_SUCCESS(args)
 	local spellId = args.spellId
@@ -148,13 +177,16 @@ function mod:SPELL_CAST_SUCCESS(args)
 			warnNatureFury:Show(args.destName)
 		end
 		timerNatureFury:Start(args.destName)
-	elseif args:IsSpellID(64587, 64650) then -- Nature Bomb
+	elseif args:IsSpellID(64587, 64650) then -- Nature Bomb explodes; the next ones land 12s later
 		if self:AntiSpam(5, 64650) and self:IsInCombat() then
 			specWarnNatureBombSummon:Cancel()
-			specWarnNatureBombSummon:Schedule(12)
-			timerNextNatureBombSummon:Start()
+			specWarnNatureBombSummon:Schedule(BOMB_EVERY - BOMB_FUSE)
+			timerNextNatureBombSummon:Start(BOMB_EVERY - BOMB_FUSE)
 			--timerNatureBombExplosion:Start()
 		end
+	elseif spellId == 62467 then -- Drained of Power: this Elder is alive, so its ability is coming
+		local a = ELDER_ABILITY[self:GetCIDFromGUID(args.sourceGUID)]
+		if a then a[1]:Start(a[2] - 5, a[3]) end
 	elseif spellId == 63601 then -- Strengthened Iron Roots
 		DBM:AddMsg("Strengthened Iron Roots unhidden from combat log. Notify Fivebuttons on Discord or GitHub")
 		--if self.vb.phase == 2 then
@@ -189,8 +221,9 @@ function mod:SPELL_AURA_REMOVED(args)
 		warnPhase2:Show()
 		warnPhase2:Play("ptwo")
 		self:SetStage(2)
-		timerNextNatureBombSummon:Start(6) -- 
-		specWarnNatureBombSummon:Schedule(8) -- delayed to the maximum timer possible
+		timerAlliesOfNature:Stop() -- no more waves once Attuned to Nature is gone
+		timerNextNatureBombSummon:Start(BOMB_FIRST)
+		specWarnNatureBombSummon:Schedule(BOMB_FIRST)
 		--timerNatureBombExplosion:Start(13.4) -- REVIEW! variance [?] (S3 HM log 2022/07/22) - 13.4
 	elseif args:IsSpellID(62861, 62438) then
 		if self.Options.SetIconOnRoots then
@@ -209,6 +242,19 @@ end
 
 function mod:UNIT_DIED(args)
 	local cid = self:GetCIDFromGUID(args.destGUID)
+	if cid == CONSERVATOR and waveType == "conservator" then
+		waveCleared(AFTER_CLEARED)
+	elseif cid == LASHER and waveType == "lashers" then
+		lashersDead = lashersDead + 1
+		if lashersDead >= LASHERS_PER_WAVE then waveCleared(AFTER_CLEARED) end
+	elseif TRIO[cid] and waveType == "trio" then
+		local now, down = GetTime(), 0
+		trioDownAt[cid] = now
+		for _, t in pairs(trioDownAt) do
+			if now - t < TRIO_REVIVE then down = down + 1 end
+		end
+		if down >= 3 then waveCleared(AFTER_TRIO) end
+	end
 	if cid == 33202 or cid == 32916 or cid == 32919 then
 		if self.Options.HealthFrame then
 			DBM.BossHealth:RemoveBoss(cid)
@@ -238,12 +284,9 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 	if msg == L.YellPullNormal then -- Yell fires before IEEU, so set HM variable here instead of OnCombatStart
 		self.vb.isHardMode = false
 	elseif msg == L.YellPullHard then
-		self.vb.isHardMode = true
-		timerGroundTremorCD:Start(35, 1) --35s on AC
-		timerIronRootsCD:Start(20) -- 20s on AC
-		timerUnstableBeamCD:Start(60) -- 60s on AC
-	elseif msg == L.SpawnYell then
-		timerAlliesOfNature:Start()
+		self.vb.isHardMode = true -- the Elder bars start from each living Elder's Drained of Power
+	elseif msg == L.SpawnYell then -- trio
+		newWave("trio")
 		if self.Options.HealthFrame then
 			if not adds[33202] then DBM.BossHealth:AddBoss(33202, L.WaterSpirit) end -- ancient water spirit
 			if not adds[32916] then DBM.BossHealth:AddBoss(32916, L.Snaplasher) end  -- snaplasher
@@ -252,10 +295,10 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		adds[33202] = true
 		adds[32916] = true
 		adds[32919] = true
-	elseif msg == L.YellAdds1 then
-		timerAlliesOfNature:Start()
-	elseif msg == L.YellAdds2 then
-		timerAlliesOfNature:Start()
+	elseif msg == L.YellAdds1 then -- Conservator
+		newWave("conservator")
+	elseif msg == L.YellAdds2 then -- lashers
+		newWave("lashers")
 	end
 end
 
