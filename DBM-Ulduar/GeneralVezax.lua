@@ -62,12 +62,20 @@ mod.vb.hardmodeLost = false
 -- schedule from his casts; the vapor emote, when anyone gets it, pins it to the real spawn.
 local VAPOR_EVERY, ANIMUS_AFTER_6TH = 30, 8
 local CAST_TIME = {[62661] = 2, [62662] = 3}
-local pullTime, castEnd = 0, 0
+local pullTime, castEnd, shownAnimus = 0, 0, nil
 
+-- one bar for the whole wait: a later vapor or a cast delay moves its end, it doesn't restart it
 local function animusBar(self)
 	if self.vb.hardmodeLost then return end
-	local sixth = self.vb.nextVapor + (5 - self.vb.vapors) * VAPOR_EVERY
-	timerHardmode:Start(sixth + ANIMUS_AFTER_6TH - GetTime())
+	local at = self.vb.nextVapor + (5 - self.vb.vapors) * VAPOR_EVERY + ANIMUS_AFTER_6TH
+	if not shownAnimus or timerHardmode:GetTime() == 0 then
+		timerHardmode:Start(at - GetTime())
+	elseif at > shownAnimus + 0.01 then
+		timerHardmode:AddTime(at - shownAnimus)
+	elseif at < shownAnimus - 0.01 then
+		timerHardmode:RemoveTime(shownAnimus - at)
+	end
+	shownAnimus = at
 end
 
 local vaporDue
@@ -113,7 +121,7 @@ end]]
 function mod:OnCombatStart(delay)
 	self.vb.interruptCount = 0
 	self.vb.hardmodeLost = false
-	pullTime, castEnd = GetTime() - delay, 0
+	pullTime, castEnd, shownAnimus = GetTime() - delay, 0, nil
 	self.vb.vapors, self.vb.nextVapor = 0, pullTime + VAPOR_EVERY
 	self:Schedule(VAPOR_EVERY - delay, vaporDue, self)
 	timerShadowCrashCD:Start(13-delay) --13s on AC
