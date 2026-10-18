@@ -9,7 +9,7 @@ DBM.WarningSign = {}
 --------------
 local sign = DBM.WarningSign
 local L = DBM_CORE_L
-local frame, texture, sweep, text, timeText, shown, endTime, moving
+local frame, texture, sweep, text, timeText, shown, endTime, moving, timed
 
 --------------------
 --  Create Frame  --
@@ -46,7 +46,7 @@ end
 
 frame:SetScript("OnUpdate", function(self)
 	local left = endTime - GetTime()
-	timeText:SetText(left > 0 and math.ceil(left) or "")
+	timeText:SetText(timed and left > 0 and math.ceil(left) or "")
 	if left <= 0 then
 		shown = nil
 		moving = nil
@@ -65,7 +65,8 @@ frame:SetScript("OnDragStop", function(self)
 end)
 
 -- sound (optional): a sound file path, played through DBM:PlaySoundFile when the sign shows
-function sign:Show(icon, duration, label, sound)
+-- alertOnly (optional): no sweep or countdown, for a sign that only says something happened
+function sign:Show(icon, duration, label, sound, alertOnly)
 	if moving then return end
 	shown = icon
 	duration = duration or 1
@@ -74,7 +75,13 @@ function sign:Show(icon, duration, label, sound)
 	texture:SetTexture(icon)
 	text:SetText(label or "")
 	frame:Show()
-	sweep:SetCooldown(GetTime(), duration)
+	timed = not alertOnly
+	if timed then
+		sweep:SetCooldown(GetTime(), duration)
+		sweep:Show()
+	else
+		sweep:Hide()
+	end
 	if sound then
 		DBM:PlaySoundFile(sound)
 	end

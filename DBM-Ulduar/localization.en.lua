@@ -385,11 +385,13 @@ L:SetTimerLocalization({
 
 L:SetOptionLocalization({
 	hardmodeSpawn					= "Show timer for Saronite Animus spawn (hard mode)",
+	VaporKilledSign					= "Show a warning sign when a Saronite Vapor dies, which ends hard mode",
 	CrashArrow						= "Show DBM arrow when $spell:62660 is near you"
 })
 
 L:SetMiscLocalization({
-	EmoteSaroniteVapors	= "A cloud of saronite vapors coalesces nearby!"
+	EmoteSaroniteVapors	= "A cloud of saronite vapors coalesces nearby!",
+	HardModeLost		= "HARD MODE LOST"
 })
 
 ------------------
