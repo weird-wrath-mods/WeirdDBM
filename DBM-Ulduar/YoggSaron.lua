@@ -1,7 +1,7 @@
 local mod	= DBM:NewMod("YoggSaron", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20261011000000")
+mod:SetRevision("20261017000000")
 mod:SetCreatureID(33288)
 mod:SetEncounterID(756)
 mod:RegisterCombat("combat_yell", L.YellPull)
@@ -298,12 +298,13 @@ end
 
 -- Brain of Yogg-Saron and Crusher Tentacle health. Part of the raid is in the brain while the rest
 -- fights tentacles, so each side rarely has the other's targets. Neither ever regains health
--- (boss_yoggsaron.cpp: no regeneration, nothing heals them), so the lowest HP anyone has read off a
--- unit is the current HP: clients share new lows and keep the lowest. Max HP from creature_template
--- until a read gives the real one.
+-- (boss_yoggsaron.cpp: no regeneration, nothing heals them), so the lowest percent anyone has read
+-- off a unit is the current one: clients share new lows and keep the lowest. Each client reads only
+-- its own target, focus and mouseover; everything else comes by addon message. Percent, not HP: a
+-- client with partial data on a unit can be handed health as a percent of 100.
 local BRAIN_GUID, CRUSHER_GUID = "0xF130008462", "0xF1300084AE" -- 33890, 33966
 local CRUSHER_ROWS, OBSERVED_SYNC_EVERY = 3, 1
-local observed = {} -- guid -> {hp, max, dead, row, new}: lowest HP seen; new = our own low, not yet sent
+local observed = {} -- guid -> {pct, dead, row, new}: lowest percent seen; new = our own low, not yet sent
 local crusherRows = {} -- up to 3 bars, each only while it has a crusher (row.guid); a crusher keeps its row
 local brainBar -- the brain bar's function, which is its id in BossHealth
 local brainGUID
@@ -312,17 +313,11 @@ local lastObservedSync = 0
 local function isBrain(guid) return guid:sub(1, #BRAIN_GUID) == BRAIN_GUID end
 local function isCrusher(guid) return guid:sub(1, #CRUSHER_GUID) == CRUSHER_GUID end
 
-local function maxHP(guid)
-	local is25 = mod:IsDifficulty("normal25")
-	if isBrain(guid) then return is25 and 6857140 or 1371428 end
-	return is25 and 2000000 or 400000
-end
-
 local function observedPct(guid, unseen)
 	local rec = guid and observed[guid]
-	if not rec or rec.hp == math.huge then return unseen end
+	if not rec or rec.pct == math.huge then return unseen end
 	if rec.dead then return 0 end
-	return rec.hp / (rec.max or maxHP(guid)) * 100
+	return rec.pct
 end
 
 -- A row's bar exists only while it shows a crusher. In phase 3 the frame goes when the last one does,
@@ -357,48 +352,44 @@ local function fillCrusherRows()
 	end
 end
 
--- hp 0 is a death. mine: read by this client, so others may not have it yet.
-local function observe(guid, hp, max, mine)
+-- pct 0 is a death. mine: read by this client, so others may not have it yet.
+local function observe(guid, pct, mine)
 	local rec = observed[guid]
 	if not rec then
-		rec = {hp = math.huge}
+		rec = {pct = math.huge}
 		observed[guid] = rec
 		if isBrain(guid) then brainGUID = guid end
 	end
-	if max and max > 0 then rec.max = max end
 	if rec.dead then return end
-	if hp <= 0 then
+	if pct <= 0 then
 		rec.dead = true
 		if mine then rec.new = true end
-	elseif hp < rec.hp then
-		rec.hp = hp
+	elseif pct < rec.pct then
+		rec.pct = pct
 		if mine then rec.new = true end
 	end
 	fillCrusherRows()
 end
 
+-- only units this client has itself: a raid member's target seen from the brain is not one of them
+local OWN_UNITS = {target = true, focus = true, mouseover = true}
+
 local function readObserved(uId)
-	local guid = UnitGUID(uId)
-	if not guid or not (isBrain(guid) or isCrusher(guid)) or UnitHealthMax(uId) == 0 then return end
-	observe(guid, UnitIsDead(uId) and 0 or UnitHealth(uId), UnitHealthMax(uId), true)
+	if not OWN_UNITS[uId] then return end
+	local guid, max = UnitGUID(uId), UnitHealthMax(uId)
+	if not guid or not (isBrain(guid) or isCrusher(guid)) or max == 0 then return end
+	observe(guid, UnitIsDead(uId) and 0 or UnitHealth(uId) / max * 100, true)
 end
 
 local function readAllObserved()
-	readObserved("target")
-	readObserved("focus")
-	readObserved("mouseover")
-	readObserved("targettarget")
-	readObserved("mouseovertarget")
-	for uId in DBM:GetGroupMembers() do
-		readObserved(uId .. "target")
-	end
+	for uId in pairs(OWN_UNITS) do readObserved(uId) end
 end
 
 local function sendObserved(now)
 	local parts = {}
 	for guid, rec in pairs(observed) do
 		if rec.new then
-			parts[#parts + 1] = guid:sub(7) .. ":" .. (rec.dead and 0 or math.floor(rec.hp))
+			parts[#parts + 1] = guid:sub(7) .. ":" .. (rec.dead and "0" or ("%.2f"):format(rec.pct))
 			rec.new = nil
 		end
 	end
@@ -440,11 +431,12 @@ local function trimForPhase3()
 end
 
 mod:RegisterOnUpdateHandler(function(self)
-	if not self:IsInCombat() or self.vb.phase < 2 or not self.Options.HealthFrame then return end
+	-- reading and sharing run with the frame off too, so a player who hides it still feeds the raid
+	if not self:IsInCombat() or self.vb.phase < 2 then return end
 	local now = GetTime()
 	readAllObserved()
 	if now - lastObservedSync >= OBSERVED_SYNC_EVERY then sendObserved(now) end
-	if self.vb.phase == 3 and DBM.BossHealth:IsShown() then trimForPhase3() end
+	if self.Options.HealthFrame and self.vb.phase == 3 and DBM.BossHealth:IsShown() then trimForPhase3() end
 end, 0.5)
 
 function mod:OnCombatStart()
@@ -682,7 +674,7 @@ function mod:SPELL_AURA_REMOVED_DOSE(args)
 end
 
 function mod:UNIT_HEALTH(uId)
-	if self.vb.phase >= 2 and self.Options.HealthFrame then readObserved(uId) end
+	if self.vb.phase >= 2 then readObserved(uId) end
 	if self.vb.phase == 1 and uId == "target" and self:GetUnitCreatureId(uId) == 33136 and UnitHealth(uId) / UnitHealthMax(uId) <= 0.3 and not targetWarningsShown[UnitGUID(uId)] then
 		targetWarningsShown[UnitGUID(uId)] = true
 		specWarnGuardianLow:Show()
@@ -706,29 +698,29 @@ end]]
 --runs open loop with nothing to resync against. Safe here: of his phase 3 casts only Deafening Roar
 --has a cast time to stall a tick on, and that one is hard mode only (:1297).
 function mod:UNIT_DIED(args)
-	if self.vb.phase >= 2 and self.Options.HealthFrame and isCrusher(args.destGUID) then
-		observe(args.destGUID, 0, nil, true)
+	if self.vb.phase >= 2 and isCrusher(args.destGUID) then
+		observe(args.destGUID, 0, true)
 	end
 end
 
 -- Seen the moment it is moused over or targeted, not on the next 0.5s scan
 function mod:UPDATE_MOUSEOVER_UNIT()
-	if self.vb.phase >= 2 and self.Options.HealthFrame then readObserved("mouseover") end
+	if self.vb.phase >= 2 then readObserved("mouseover") end
 end
 
 function mod:UNIT_TARGET(uId)
-	if self.vb.phase >= 2 and self.Options.HealthFrame then readObserved(uId .. "target") end
+	if uId == "player" and self.vb.phase >= 2 then readObserved("target") end
 end
 
 function mod:PLAYER_FOCUS_CHANGED()
-	if self.vb.phase >= 2 and self.Options.HealthFrame then readObserved("focus") end
+	if self.vb.phase >= 2 then readObserved("focus") end
 end
 
 function mod:OnSync(msg, payload, sender)
 	if msg == "ObservedHP" then
-		if not payload or sender == UnitName("player") or not self.Options.HealthFrame then return end
-		for tail, hp in payload:gmatch("(%x+):(%d+)") do
-			observe("0xF130" .. tail, tonumber(hp), nil, false)
+		if not payload or sender == UnitName("player") then return end
+		for tail, pct in payload:gmatch("(%x+):([%d.]+)") do
+			observe("0xF130" .. tail, tonumber(pct), false)
 		end
 	elseif msg == "Phase3" then
 		self:SetStage(3)
