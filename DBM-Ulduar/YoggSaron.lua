@@ -2,6 +2,7 @@ local mod	= DBM:NewMod("YoggSaron", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
 mod:SetRevision("20261017000000")
+mod:SetMinSyncRevision("20261017000000") -- ObservedHP went from absolute HP to percent
 mod:SetCreatureID(33288)
 mod:SetEncounterID(756)
 mod:RegisterCombat("combat_yell", L.YellPull)
