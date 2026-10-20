@@ -1380,7 +1380,7 @@ function showStrip(rows, period, t, hasTanks)
 	end
 	if not strip then
 		strip = CreateFrame("Frame", "DBMCooldownPlanStrip", UIParent)
-		strip:SetSize(LABEL_W + STRIP_W + 2 * PAD + 4, LANES_TOP + 2 * LANE_H + PAD + 2)
+		strip:SetSize(LABEL_W + STRIP_W + 2 * PAD + 4, LANES_TOP + 2 * LANE_H + PAD)
 		strip:SetBackdrop({
 			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 			tile = true, tileSize = 16, edgeSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
@@ -1451,8 +1451,8 @@ function drawStrip(t)
 		local p = low and stripPart(strip.trinkets, "low") or stripPart(strip.blocks)
 		p:ClearAllPoints()
 		p:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(from) - x0, -(lane - 1) * LANE_H - 1)
-		p:SetSize(math.max(1, x(to) - x(from) - 1), LANE_H - 2) -- a pixel apart, so neighbours read as two
-		p.child:SetHeight(LANE_H - 2)
+		p:SetSize(math.max(1, x(to) - x(from)), LANE_H - 1)
+		p.child:SetHeight(LANE_H - 1)
 		p:SetBackdropColor(color[1], color[2], color[3], a)
 		p:SetBackdropBorderColor(1, 0.82, 0, mine and 1 or 0)
 		p.text:SetFont("Fonts\\ARIALN.TTF", 12, "OUTLINE") -- narrow, so a caster's name fits beside the spell
@@ -1538,14 +1538,14 @@ function drawStrip(t)
 		p.text:SetText((swap and "Swap \194\183 " or "") .. name)
 		p.text:SetTextColor(1, 1, 1) -- the outline keeps white readable on any class colour
 		local w = p.text:GetStringWidth() + 6
-		local left = math.max(px, 0) -- the now line
+		local left, right = math.max(px, 0), math.min(px + w, STRIP_W + 2) -- the now line and the strip's edge
 		p:SetFrameLevel(strip.tagRow:GetFrameLevel() + 1 + 3 * (number - base))
 		p:ClearAllPoints()
 		p:SetPoint("TOPLEFT", left, 0)
-		p:SetSize(math.max(1, px + w - left), TAG_BG)
+		p:SetSize(math.max(1, right - left), TAG_BG)
 		p.text:ClearAllPoints()
 		p.text:SetPoint("LEFT", p.child, "TOPLEFT", px + 3 - left, -TAG_H / 2) -- centred on the text row
-		p:Show()
+		if right - left >= 1 then p:Show() end -- not yet in from the right
 		return px + w
 	end
 	if not strip.prefix then -- how much of a tag is "Swap · ", to know when it has slid out of sight
