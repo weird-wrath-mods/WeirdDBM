@@ -112,21 +112,27 @@ end
 -- on its schedule, and Curse of Doom hits 60s after it lands (logs: 59.9 to 60.0s, never a crit), with
 -- no partial resists on a level 80 star. Its amount isn't fixed: unresisted on Algalon our locks did
 -- 17.3k to 26.8k, with the +13% spell damage taken debuff a star won't carry, so 15.3k to 23.8k on a
--- star; a lock with no raid buffs did 13.9k. DOOM_HP sits at the low end: a bigger Doom still kills when
--- it lands, a smaller one leaves the star to Collapse ticks after the raid is released. So the HP that
--- dies inside the target is a range: Collapse alone, about 2 ticks wide, and DOOM_HP wider once a Doom
--- is out that lands inside the target (aimed at T+8.4).
+-- star; a lock with no raid buffs did 13.4k to 13.9k. DOOM_HP sits at the low end, and the take-off aims
+-- a Collapse tick under it: a bigger Doom still kills when it lands, while one more than a tick smaller
+-- leaves the star to Collapse ticks after the raid is released.
+-- So the HP that dies inside the target is a range: Collapse alone, about 2 ticks wide, and DOOM_HP wider
+-- once a Doom is out that lands inside the target (aimed at T+8.4).
 local HOLD_TO, BIG_BANG_EVERY = 9, 90.5
 local SAFE_FROM, SAFE_TO = 6.5, 8.8
 local DOOM_HP, DOOM_DELAY = 14000, 60
 local DOOM_FROM, DOOM_POP = 8.0, 8.4 -- a Doom lands after Big Bang has hit; aimed at the middle
--- How far DOOM NOW leads the window. A press made as the prompt appears reached the server about 0.75s
--- later in our tests (reaction and latency), so leading by 0.3 lands it around T+8.45, mid-window
-local REACTION = 0.3
+-- How far DOOM NOW leads the window. With the bars redrawn every 0.1s, a press made as the prompt
+-- appeared reached the server at once in our tests, so no lead: it lands at the window's start or just after
+local REACTION = 0
 local DOOM = {[603] = true, [30910] = true, [47867] = true} -- ranks 1-3
 local DOOM_ICON = select(3, GetSpellInfo(47867)) or "Interface\\Icons\\Spell_Shadow_AuraOfDarkness"
 local bigBangAt -- start of the Big Bang casting now, else the next one
-local GREEN, YELLOW, BLUE, RED = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}, {0.25, 0.55, 0.95}, {0.85, 0.2, 0.2}
+-- Dooms are for the first Big Bang only. On AC's schedule (waves at 16.5s then every 60s, Big Bang at 90s
+-- then every 90.5s, a star living at most 100s) the second Big Bang can't have a star Doomed for it at all,
+-- and the third is near the 6 min enrage. Once the first Big Bang's DOOM NOW has closed, stars without a
+-- Doom are plain bars and the Cast Dooms bar goes.
+local doomsUntil
+local GREEN, YELLOW, RED = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}, {0.85, 0.2, 0.2}
 local PURPLE = {0.6, 0.35, 0.85}
 
 local function seg(from, to, c, a) return {from, to, c[1], c[2], c[3], a} end
@@ -159,14 +165,15 @@ local function safeRange(s, now, bb, lands)
 end
 
 -- The bar is one instruction: the HP fill in one colour and one word or number before the percent.
---   blue + number: HP still to take off to the zone a Doom landing on time gives; the same number
+--   green, blue number: HP still to take off to the zone a Doom landing on time gives; the same number
 --   before and after the Doom is cast, so it can be worked to ahead of time
 --   purple, DOOM IN Xs / DOOM NOW: in that zone, waiting for the Doom moment
 --   yellow STOP: Doomed and it dies inside the target; leave it alone
 --   red TOO LOW: it dies before the target, whatever happens now
 --   red DOOM EARLY / DOOM LATE: its Doom lands outside the target, so the number can't be trusted
 --   green, percent only: no Doom can land in time and it isn't Doomed, so there is nothing to aim
---   for (those stars are killed on purpose, spread out)
+--   for (those stars are killed on purpose, spread out); every undoomed star once the first Big Bang's
+--   DOOM NOW has closed
 -- A Doomed star also gets the Doom icon after its name.
 local function starStyle(s, h, c, text, doomed)
 	local style = {segs = {seg(0, h, c)}, text = text}
@@ -182,17 +189,25 @@ end
 local function simpleBar(s, now, hp, h, bb)
 	local doomed = s.doomAt ~= nil
 	if not bb then return starStyle(s, h, GREEN, nil, doomed) end
+	-- a Doom that already hit on the way to this Big Bang: its damage is in hp now, so the bar carries on
+	-- with Collapse alone rather than dropping to green while the star still needs taking off
+	local hit = s.doomHit and s.doomHit > bb - 30
 	local pressFrom, pressTo = doomWindow(bb)
-	if not doomed and now > pressTo then return starStyle(s, h, GREEN, nil, doomed) end
+	if not doomed and not hit and (now > pressTo or doomsUntil and now > doomsUntil) then
+		return starStyle(s, h, GREEN, nil, doomed)
+	end
 	-- one number whether or not the Doom is out yet: always worked out for a Doom landing on time. One
 	-- that lands outside the target is flagged rather than quietly changing the number
 	local lands = doomLands(s, now)
 	if lands and lands < bb + SAFE_FROM then return starStyle(s, h, RED, "|cffd93333" .. L.StarDoomEarly .. "|r", true) end
 	if lands and lands > bb + SAFE_TO then return starStyle(s, h, RED, "|cffd93333" .. L.StarDoomLate .. "|r", true) end
-	local low, high = safeRange(s, now, bb, bb + DOOM_POP)
+	local low, high = safeRange(s, now, bb, not hit and bb + DOOM_POP or nil)
 	if hp <= low then return starStyle(s, h, RED, "|cffd93333" .. L.StarTooLow .. "|r", doomed) end
-	if hp > high then return starStyle(s, h, BLUE, "|cff58d858" .. kHP(hp - high) .. "|r", doomed) end
-	if doomed then return starStyle(s, h, YELLOW, "|cfff2cc26" .. L.StarStop .. "|r", true) end
+	-- with a Doom still to land, take off to a Collapse tick under the top, so a Doom up to a tick short of
+	-- DOOM_HP still kills in time; the Doom zone is DOOM_HP wide, so this stays well above TOO LOW
+	local target = hit and high or high - starMax * 0.01
+	if hp > target then return starStyle(s, h, GREEN, "|cff5aa0ff" .. kHP(hp - target) .. "|r", doomed) end
+	if doomed or hit then return starStyle(s, h, YELLOW, "|cfff2cc26" .. L.StarStop .. "|r", doomed) end
 	local word = now < pressFrom and L.StarDoomIn:format(pressFrom - now) or L.StarDoomNow
 	return starStyle(s, h, PURPLE, "|cffb070ff" .. word .. "|r")
 end
@@ -212,7 +227,7 @@ local function starBarValue(s)
 	if hp <= 0 then return 0, s.icon end
 	local h = math.max(starBarPct(s, now, hp), 0)
 	while bigBangAt and now > bigBangAt + HOLD_TO do bigBangAt = bigBangAt + BIG_BANG_EVERY end
-	if s.doomAt and now > s.doomAt + 1 then s.doomAt = nil end -- its end went unseen (phased)
+	if s.doomAt and now > s.doomAt + 1 then s.doomHit, s.doomAt = s.doomAt, nil end -- its end went unseen (phased)
 	return simpleBar(s, now, hp, h, targetBigBang(s, now))
 end
 
@@ -368,7 +383,10 @@ local function seeStarIcon(s, icon, now, fromLog)
 	end
 end
 
+-- In a Black Hole the server sends nothing about stars (raid logs show no star lines at all while
+-- phased), so a star seen through a raid member's target is stale and would undo the raid's lows
 local function readStarUnit(uId, now)
+	if phased then return end
 	local guid = UnitGUID(uId)
 	if guid and guid:sub(1, #STAR_GUID) == STAR_GUID and UnitHealthMax(uId) > 0 and not UnitIsDead(uId) then
 		readStar(guid, UnitHealth(uId) / UnitHealthMax(uId) * starMax, now)
@@ -453,7 +471,8 @@ function onStarLog(event, _, _, _, destGUID, _, destFlags, a1, a2, a3, a4, a5)
 		if s and not s.dead then s.doomAt = now + DOOM_DELAY end
 		return
 	elseif DOOM[a1] and event == "SPELL_AURA_REMOVED" then -- the Doom hit and the star lived
-		if starByGuid[destGUID] then starByGuid[destGUID].doomAt = nil end
+		local s = starByGuid[destGUID]
+		if s then s.doomHit, s.doomAt = now, nil end
 		return
 	end
 	local amount, overkill
@@ -498,6 +517,10 @@ function mod:startTimers()
 	announcePreBigBang:Schedule(80)
 	timerNextBigBang:Start(90)
 	bigBangAt = GetTime() + 90
+	doomsUntil = select(2, doomWindow(bigBangAt))
+	if self.Options.DoomCountdown then
+		self:Schedule(doomsUntil - GetTime(), function() DBM.BossHealth:RemoveBoss(L.CastDooms) end)
+	end
 	enrageTimer:Start(360)
 end
 
@@ -505,7 +528,7 @@ function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	clearStars()
 	starMax = self:IsDifficulty("normal25") and 176400 or 88200
-	playerGUID, phased, lastStarSync, bigBangAt = UnitGUID("player"), false, 0, nil
+	playerGUID, phased, lastStarSync, bigBangAt, doomsUntil = UnitGUID("player"), false, 0, nil, nil
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:RegisterEvent(e) end
 	-- DBM-Core opened it under Algalon's name just before this. With the Cast Dooms bar on top, the
