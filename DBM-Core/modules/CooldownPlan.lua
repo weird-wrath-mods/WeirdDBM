@@ -162,9 +162,8 @@ local SWAP_DELAY = 4	-- ...this long after the 4th, leaving time to taunt again 
 local SWAP_LEAD = 1	-- the incoming tank's big cooldown goes up this long before they taunt; a "Tank swap" row is that press
 local SMASH_CLEAR = 4	-- a swap with a smash landing from the press to this long after the taunt waits up to this much longer,
 local RETRY_ROOM = 9	-- but always leaving this long before the next punch: a taunt's 8s cooldown and a second to retry a miss
--- the outgoing tank stays covered this long past the expected swap, since the real swap is never on time;
--- the cooldown already running usually reaches past it, and only their own cooldowns are spent on the rest
-local SWAP_SLACK = 3
+-- no new cooldown on the outgoing tank this close to their swap, or after it: even the shortest would be mostly wasted
+local SWAP_QUIET = 4
 
 local punches, smashCasts = {}, {}
 do
@@ -233,6 +232,7 @@ local function round(t) return math.floor(t * 2 + 0.5) / 2 end
 -- off still covers it. Divine Guardian also covers the tank, so it only goes that early where the tank isn't
 -- already covered, and otherwise as early as it can without overlapping that cover, but never later than RAID_LEAD_MIN.
 local RAID_LEAD, RAID_LEAD_MIN = 3, 1
+local PLAYER_GAP = 10	-- least time between two planned presses by one player: time to read the card and press. Free on the usual roster; 12s costs a thinner roster a smash
 local GAP_OK = 1	-- a hole this short before a planned cooldown isn't worth spending another on
 
 -- A plan for the rest of the fight from fight time opts.from, as rows like CP.Parse's.
@@ -240,7 +240,8 @@ local GAP_OK = 1	-- a hole this short before a planned cooldown isn't worth spen
 -- opts.tanks: the two tanks, opts.tank: which of them has the boss at opts.from (default 1);
 -- opts.covered: [tank] = fight time their current cooldown runs to (default from);
 -- opts.used: [pool index] = fight times it was already used (so it isn't planned again too soon);
--- opts.swaps: expected swap times (default CP.SwapTimes); opts.stop (default FIGHT).
+-- opts.swaps: expected swap times (default CP.SwapTimes); opts.stop (default FIGHT);
+-- opts.weaker: the tank to fill first, so the shared externals go to them before the stronger tank.
 -- In order: each tank's big cooldown at the pull and at each swap-in; raid-wide cooldowns on Cosmic
 -- Smash; the rest of each tank's time filled with real cooldowns, the tank's own before shared ones, unused
 -- longest first; then trinkets, too weak to count as cover, into their owner's holes and next to their owner's
@@ -264,11 +265,22 @@ local function build(opts, rng)
 		for _, t in ipairs(opts.used and opts.used[i] or {}) do uses[i][#uses[i] + 1] = t end
 	end
 
+	local gap = opts.playerGap or PLAYER_GAP
 	local function free(i, t)
 		local c = pool[i]
 		if (c.readyAt or 0) > t then return false end
 		for _, u in ipairs(uses[i]) do
 			if math.abs(t - u) < c.cd then return false end
+		end
+		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count)
+		if gap > 0 and not c.trinket then
+			for j, o in ipairs(pool) do
+				if j ~= i and o.player == c.player and not o.trinket then
+					for _, u in ipairs(uses[j]) do
+						if math.abs(t - u) < gap then return false end
+					end
+				end
+			end
 		end
 		return true
 	end
@@ -307,6 +319,14 @@ local function build(opts, rng)
 		local s = 1
 		while starts[s + 1] and starts[s + 1] <= t do s = s + 1 end
 		return holder(s)
+	end
+	-- a trinket is only worth pressing if at least half of it lands while its owner has the boss
+	local function worthIt(c, t)
+		local held = 0
+		for x = t, t + c.dur - 0.5, 0.5 do
+			if holderAt(x) == c.player then held = held + 0.5 end
+		end
+		return held >= c.dur / 2
 	end
 
 	-- 0: uses carried over as they are from the plan being repaired (CP.Replan's opts.keep)
@@ -376,10 +396,14 @@ local function build(opts, rng)
 			use(pick, at, who, "Cosmic Smash")
 		end
 	end
-	-- 3: the rest of each tank's time
-	for s, segStart in ipairs(starts) do
+	-- 3: the rest of each tank's time, the weaker tank's stints first
+	local order = {}
+	for s in ipairs(starts) do if holder(s) == opts.weaker then order[#order + 1] = s end end
+	for s in ipairs(starts) do if holder(s) ~= opts.weaker then order[#order + 1] = s end end
+	for _, s in ipairs(order) do
+		local segStart = starts[s]
 		local who, swapAt = holder(s), starts[s + 1]
-		local segEnd = math.min((swapAt or stop) + (swapAt and SWAP_SLACK or 0), stop)
+		local segEnd = math.min(swapAt or stop, stop)
 		local c = math.max(segStart, covered[who] or segStart)
 		while c < segEnd do
 			local inFixed, nextFixed
@@ -391,11 +415,14 @@ local function build(opts, rng)
 				c = inFixed
 			elseif nextFixed and nextFixed - c <= GAP_OK then
 				c = nextFixed
+			elseif swapAt and c >= swapAt - SWAP_QUIET then
+				local last = holes[#holes]
+				if last and last[1] == who and last[3] == c then last[3] = segEnd else holes[#holes + 1] = {who, c, segEnd} end
+				break
 			else
-				local overlap = swapAt and c >= swapAt -- past the swap only the outgoing tank's own cooldowns
 				local pick, pickIdle, pickRank, soonest
 				for i, cd in ipairs(pool) do
-					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) and not (overlap and cd.player ~= who) then
+					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) then
 						if free(i, c) then
 							local last = -math.huge
 							for _, u in ipairs(uses[i]) do if u < c and u > last then last = u end end
@@ -417,11 +444,11 @@ local function build(opts, rng)
 				if pick then
 					use(pick, c, who)
 					c = c + pool[pick].dur
-				elseif overlap then
-					break
 				else
-					local til = math.min(soonest or segEnd, nextFixed or segEnd, swapAt or segEnd)
-					holes[#holes + 1] = {who, c, til}
+					-- at least half a second on: the soonest free time ignores the player gap, so it can land on c itself
+					local til = math.max(c + 0.5, math.min(soonest or segEnd, nextFixed or segEnd, swapAt or segEnd))
+					local last = holes[#holes]
+					if last and last[1] == who and last[3] == c then last[3] = til else holes[#holes + 1] = {who, c, til} end
 					c = til
 				end
 			end
@@ -433,7 +460,7 @@ local function build(opts, rng)
 	for i, c in ipairs(pool) do
 		if c.trinket then
 			for _, h in ipairs(holes) do
-				if h[1] == c.player and free(i, h[2]) then use(i, h[2], c.player) end
+				if h[1] == c.player and free(i, h[2]) and worthIt(c, h[2]) then use(i, h[2], c.player) end
 			end
 		end
 	end
@@ -466,7 +493,7 @@ local function build(opts, rng)
 				return a.time < b.time
 			end)
 			for _, w in ipairs(windows) do
-				if free(i, w.time) then use(i, w.time, c.player, "with " .. w.spell) end
+				if free(i, w.time) and worthIt(c, w.time) then use(i, w.time, c.player, "with " .. w.spell) end
 			end
 		end
 	end
@@ -500,7 +527,7 @@ function CP.Generate(opts, tries)
 	return best, bestProblems, bestScore
 end
 
-local MATCH = 3	-- a cast this close to its planned time is that planned use
+local MATCH = 6	-- a cast this close to its planned time is that planned use, and one this late is a no-show (the shortest cooldowns last 6s)
 local LOCK = 3	-- uses due this soon stay as planned: their owners are already being warned
 local NOSHOW_WAIT = 10	-- a planned use that didn't happen isn't counted on again for this long
 local KEEP = 40	-- a re-plan leaves uses this soon as they are when they can still happen (the timeline strip's span)
@@ -576,7 +603,7 @@ function CP.Replan(opts)
 		if t == holder and not dead[t] then tank = #tanks end
 	end
 	if dead[holder] then tank = 1 end -- the other tank has it now
-	local rows, problems = CP.Generate({pool = pool, tanks = tanks, tank = tank, covered = covered, from = from, stop = opts.stop, swaps = swaps, keep = carry})
+	local rows, problems = CP.Generate({pool = pool, tanks = tanks, tank = tank, covered = covered, from = from, stop = opts.stop, swaps = swaps, keep = carry, weaker = opts.weaker})
 	for _, r in ipairs(keep) do rows[#rows + 1] = r end
 	table.sort(rows, function(a, b) return a.time < b.time end)
 	return rows, problems
@@ -613,13 +640,13 @@ function CP.NotReady(player, spell, due)
 	end
 end
 
--- player's side of the plan at fight time t: the use that's up now (now, nowLeft), the next one
--- (next, nextIn) and, by due time, every other planned use that pressing its cooldown now would miss
--- (save = {{row = r, due = s}}), so nobody spends Aura Mastery a minute before the smash it's planned for;
--- and what the plan has up on tank right now (cover = {{row = r, left = s}}). go: a use of mine that's due
--- and not cast yet, until MATCH seconds late, when it counts as missed
+-- player's side of the plan at fight time t: the next use (next, nextIn) and the one after it (later, laterIn),
+-- skipping any already cast (a raid cooldown is fire and forget: the card moves on the moment it's pressed),
+-- and what the plan has up on tank
+-- right now (cover = {{row = r, left = s}}). go: a use of mine that's due and not cast yet, until MATCH
+-- seconds late, when it counts as missed
 function CP.Card(rows, period, player, t, tank)
-	local card, firstDue, seen = {save = {}, cover = {}}, {}, {}
+	local card = {cover = {}}
 	for _, r in ipairs(rows) do
 		if r.player == player and not r.done and not card.go then
 			local due = CP.NextUse(r, period, t - MATCH)
@@ -630,27 +657,27 @@ function CP.Card(rows, period, player, t, tank)
 			local left = due + (r.dur or CP.Info(r.player, r.spell) or 0) - t
 			if due <= t and left > 0 then card.cover[#card.cover + 1] = {row = r, left = left} end
 		end
-		if r.player == player then
+		if r.player == player and not r.done then
 			local due = CP.NextUse(r, period, t)
-			local dur = r.dur or CP.Info(player, r.spell) or 0
-			if due < t and t - due < dur and not card.now then card.now, card.nowLeft = r, due + dur - t end
 			if due >= t and r ~= card.go then
-				if not card.next or due < card.nextIn + t then card.next, card.nextIn = r, due - t end
-				if not firstDue[r.spell] or due < firstDue[r.spell].due then firstDue[r.spell] = {row = r, due = due} end
+				if not card.next or due < card.nextIn + t then
+					card.later, card.laterIn = card.next, card.nextIn
+					card.next, card.nextIn = r, due - t
+				elseif not card.later or due < card.laterIn + t then
+					card.later, card.laterIn = r, due - t
+				end
 			end
 		end
 	end
-	local headline = card.go or card.now or card.next -- the card's big line; everything else goes on the list
-	for _, r in ipairs(rows) do
-		local f = r.player == player and firstDue[r.spell]
-		if f and f.row ~= headline and not seen[r.spell] then
-			seen[r.spell] = true
-			local _, cd = CP.Info(player, r.spell)
-			if not cd or f.due - t < cd then card.save[#card.save + 1] = f end
-		end
-	end
-	table.sort(card.save, function(a, b) return a.due < b.due end)
 	return card
+end
+
+-- the weaker of two tanks by maximum health, or nil when they're within STRONGER_BY of each other
+local STRONGER_BY = 1000
+function CP.Weaker(tanks, maxHealth)
+	local a, b = maxHealth[tanks[1]], maxHealth[tanks[2]]
+	if not a or not b or math.abs(a - b) < STRONGER_BY then return nil end
+	return a < b and tanks[1] or tanks[2]
 end
 
 -- who the plan has on the boss at fight time t: the last swap's tank, else the first row's target
@@ -665,13 +692,13 @@ end
 
 -- The timeline strip from fight time t for span seconds: one tank lane showing whoever has the boss (the
 -- incoming tank's cover from their press, the outgoing tank's cut off there), a tag naming the tank at each
--- handover, the holes while the tank on the boss has nothing up, a raid lane with raid-wide cooldowns,
--- Cosmic Smash impacts and swaps (taunts).
--- {lanes = {{name = "Tank", blocks = {{from, to, row}}, gaps = {{from, to}}, tags = {{time, name}}}, {name = "Raid", blocks}},
+-- handover, a raid lane with raid-wide cooldowns, Cosmic Smash impacts and swaps (taunts). A hole is just
+-- empty lane.
+-- {lanes = {{name = "Tank", blocks = {{from, to, row}}, tags = {{time, name}}}, {name = "Raid", blocks}},
 --  smashes, swaps}
 function CP.Strip(rows, period, t, span, isRaid)
 	local stop = t + span
-	local tank, raid = {name = "Tank", blocks = {}, gaps = {}, tags = {}}, {name = "Raid", blocks = {}}
+	local tank, raid = {name = "Tank", blocks = {}, tags = {}}, {name = "Raid", blocks = {}}
 	local strip = {lanes = {tank, raid}, smashes = CP.SmashTimes(t, stop), swaps = {}}
 	local uses = {}	-- every use in view, by target
 	local taunts = {}
@@ -719,13 +746,6 @@ function CP.Strip(rows, period, t, span, isRaid)
 			local from, to = math.max(u.from, laneFrom, t), math.min(u.to, nextStart, stop)
 			if to > from then tank.blocks[#tank.blocks + 1] = {from = from, to = to, row = u.row} end
 		end
-		-- holes: the tank on the boss with nothing up
-		local c = a
-		for _, u in ipairs(mine) do
-			if u.from > c and c < b then tank.gaps[#tank.gaps + 1] = {from = c, to = math.min(u.from, b)} end
-			c = math.max(c, u.to)
-		end
-		if c < b then tank.gaps[#tank.gaps + 1] = {from = c, to = b} end
 	end
 	return strip
 end
@@ -859,6 +879,16 @@ end
 
 -- everyone in the group with what they reported, and the two tanks: the raid's main tanks, else the
 -- players with a big cooldown. readyAt is seconds after origin (the pull, or now for a plan made now).
+-- the tank with less maximum health gets first pick of the shared externals
+local function weakerTank(tanks)
+	local hp = {}
+	for _, name in ipairs(tanks) do
+		local unit = DBM:GetRaidUnitId(name)
+		if unit then hp[name] = UnitHealthMax(unit) end
+	end
+	return CP.Weaker(tanks, hp)
+end
+
 local function roster(origin)
 	local units = {"player"}
 	for i = 1, GetNumRaidMembers() do units[#units + 1] = "raid" .. i end
@@ -998,7 +1028,7 @@ local function replan()
 	if not tanks then return end
 	local tank = fight.holder == tanks[2] and 2 or fight.holder == tanks[1] and 1 or #CP.SwapTimes(0, t) % 2 + 1
 	local rows = CP.Replan({
-		rows = active.rows, uses = fight.uses, pool = (roster(pullTime)), tanks = tanks, tank = tank,
+		rows = active.rows, uses = fight.uses, pool = (roster(pullTime)), tanks = tanks, tank = tank, weaker = weakerTank(tanks),
 		now = t, dead = fight.dead, missed = fight.missed,
 		swaps = fight.holder and CP.SwapTimes(t, FIGHT, fight.stacks) or nil,
 	})
@@ -1050,7 +1080,7 @@ end
 -- right-click hides it
 function showCard(rows, period, t, prepull, tank)
 	local c = CP.Card(rows, period, playerName, t, tank)
-	if not c.go and not c.now and not c.next then
+	if not c.go and not c.next then
 		if card then card:Hide() end
 		return
 	end
@@ -1080,9 +1110,9 @@ function showCard(rows, period, t, prepull, tank)
 		card.head:SetPoint("TOPLEFT", card.tank, "BOTTOMLEFT", 0, -6)
 		card.why = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
 		card.why:SetPoint("TOPLEFT", card.head, "BOTTOMLEFT", 0, -3)
-		card.save = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-		card.save:SetPoint("TOPLEFT", card.why, "BOTTOMLEFT", 0, -8)
-		for _, fs in ipairs({card.tank, card.head, card.why, card.save}) do
+		card.after = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+		card.after:SetPoint("TOPLEFT", card.why, "BOTTOMLEFT", 0, -6)
+		for _, fs in ipairs({card.tank, card.head, card.why, card.after}) do
 			fs:SetWidth(280)
 			fs:SetJustifyH("LEFT")
 		end
@@ -1091,7 +1121,7 @@ function showCard(rows, period, t, prepull, tank)
 	if not showTank then
 		card.tank:SetText("")
 	elseif #c.cover == 0 then
-		card.tank:SetFormattedText("%s: |cffff4020nothing up|r", tank)
+		card.tank:SetFormattedText("%s: |cff999999nothing up|r", tank) -- grey: red would push people into the wrong cooldown
 	else
 		local on = {}
 		for _, u in ipairs(c.cover) do
@@ -1099,21 +1129,24 @@ function showCard(rows, period, t, prepull, tank)
 		end
 		card.tank:SetFormattedText("%s: |cff40ff40%s|r", tank, table.concat(on, " + "))
 	end
-	local r = c.go or c.now or c.next
+	local r = c.go or c.next
 	if c.go and not prepull then
 		card.head:SetFormattedText("|cffff3030NOW:|r %s", r.spell)
-	elseif c.now then
-		card.head:SetFormattedText("%s up, %ds", r.spell, math.ceil(c.nowLeft))
 	elseif prepull then
 		card.head:SetFormattedText("%s at %s", r.spell, clock(r.time))
 	else
 		card.head:SetFormattedText("%s in %s", r.spell, c.nextIn < 60 and ("%ds"):format(math.ceil(c.nextIn)) or clock(c.nextIn))
 	end
 	card.why:SetText((reason(r):gsub("^ ", "")))
-	local save = {}
-	for _, s in ipairs(c.save) do save[#save + 1] = ("%s %s%s"):format(clock(s.due), s.row.spell, reason(s.row)) end
-	card.save:SetText(#save > 0 and ("|cffffd100Save for the plan:|r\n" .. table.concat(save, "\n")) or "")
-	card:SetHeight(26 + (showTank and card.tank:GetHeight() + 6 or 0) + card.head:GetHeight() + card.why:GetHeight() + (#save > 0 and card.save:GetHeight() + 8 or 0))
+	-- the cooldown after that: the next one when the big line is NOW, else the one after the next
+	local after, afterIn = c.go and c.next or c.later, c.go and c.nextIn or c.laterIn
+	if after then
+		local when = prepull and ("at " .. clock(after.time)) or ("in " .. (afterIn < 60 and ("%ds"):format(math.ceil(afterIn)) or clock(afterIn)))
+		card.after:SetFormattedText("|cff999999then|r %s %s%s", after.spell, when, reason(after))
+	else
+		card.after:SetText("")
+	end
+	card:SetHeight(26 + (showTank and card.tank:GetHeight() + 6 or 0) + card.head:GetHeight() + card.why:GetHeight() + (after and card.after:GetHeight() + 6 or 0))
 	card:Show()
 end
 
@@ -1234,7 +1267,6 @@ function showStrip(rows, period, t, hasTanks)
 			local short = r.spell .. ((lane.name == "Raid" or r.player ~= r.target) and (" (" .. r.player .. ")") or "")
 			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, 0.9, short, r.player == playerName)
 		end
-		for _, g in ipairs(lane.gaps or {}) do block(i, g.from, g.to, {1, 0.2, 0.1}, 0.45, "nothing up") end
 	end
 	-- whose lane it is: a tag in the tank's class colour at each handover
 	for _, tag in ipairs(s.lanes[1].tags) do
@@ -1429,11 +1461,12 @@ end
 
 local function generate()
 	local pool, tanks = roster(GetTime())
+	tanks = {tanks[1], tanks[2]}
 	if #tanks < 2 then
 		DBM:AddMsg("Generate needs two tanks: set Main Tank on them in the raid frame, or have them in the group with DBM.")
 		return
 	end
-	local rows, problems = CP.Generate({pool = pool, tanks = {tanks[1], tanks[2]}})
+	local rows, problems = CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks)})
 	editBox:SetText(CP.Format(rows, problems))
 	report(editing)
 	for _, p in ipairs(problems) do DBM:AddMsg("  " .. p) end
