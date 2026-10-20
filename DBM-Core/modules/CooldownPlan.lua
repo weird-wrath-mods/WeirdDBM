@@ -1382,8 +1382,8 @@ function showStrip(rows, period, t, hasTanks)
 		strip = CreateFrame("Frame", "DBMCooldownPlanStrip", UIParent)
 		strip:SetSize(LABEL_W + STRIP_W + 2 * PAD + 4, LANES_TOP + 2 * LANE_H + PAD)
 		strip:SetBackdrop({
-			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-			tile = true, tileSize = 16, edgeSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
+			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+			tile = true, tileSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
 		})
 		strip:SetBackdropColor(0, 0, 0, 0.75)
 		strip:SetMovable(true)
@@ -1474,8 +1474,8 @@ function drawStrip(t)
 	local function line(time, r, g, b)
 		local l = stripPart(strip.lines, "line")
 		l:ClearAllPoints()
-		l:SetPoint("TOPLEFT", x(time), -PAD)
-		l:SetSize(2, LANES_TOP - PAD + 2 * LANE_H)
+		l:SetPoint("TOPLEFT", x(time), -3) -- into the border, which covers its ends, like the now line
+		l:SetSize(2, LANES_TOP + 2 * LANE_H + PAD - 6)
 		l:SetTexture(r, g, b, 0.6) -- see-through enough to read a label behind it
 	end
 	for i, lane in ipairs(s.lanes) do
@@ -1508,10 +1508,27 @@ function drawStrip(t)
 		strip.top = CreateFrame("Frame", nil, strip)
 		strip.top:SetAllPoints()
 		strip.top:SetFrameLevel(strip.tagRow:GetFrameLevel() + 30) -- over the tags (three levels a tag in view)
-		strip.now = strip.top:CreateTexture(nil, "OVERLAY")
-		strip.now:SetTexture(1, 1, 1, 0.9)
-		strip.now:SetPoint("TOPLEFT", x0, -PAD)
-		strip.now:SetSize(2, LANES_TOP - PAD + 2 * LANE_H)
+		-- into the border above and below, which covers its ends; wider than the lines it stands among, grown
+		-- leftwards so the tags still go under it. Opaque grey, light in the middle and darker towards both ends,
+		-- so it isn't a hard white bar: a gradient only runs between two ends, so it's three pieces
+		local span = LANES_TOP + 2 * LANE_H + PAD - 6
+		local fade = span * 0.38
+		local MID, TIP = 0.55, 0.25
+		local function piece(from, height)
+			local p = strip.top:CreateTexture(nil, "OVERLAY")
+			p:SetTexture(1, 1, 1, 1)
+			p:SetPoint("TOPLEFT", x0 - 1, -3 - from)
+			p:SetSize(3, height)
+			return p
+		end
+		piece(0, fade):SetGradientAlpha("VERTICAL", MID, MID, MID, 1, TIP, TIP, TIP, 1) -- bottom colour first
+		piece(fade, span - 2 * fade):SetVertexColor(MID, MID, MID)
+		piece(span - fade, fade):SetGradientAlpha("VERTICAL", TIP, TIP, TIP, 1, MID, MID, MID, 1)
+		-- the border on its own frame, over everything in the strip
+		strip.border = CreateFrame("Frame", nil, strip)
+		strip.border:SetAllPoints()
+		strip.border:SetBackdrop({edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16})
+		strip.border:SetFrameLevel(strip.top:GetFrameLevel() + 1)
 	end
 	-- a frame per tag, by swap number (0: the tank at the pull), each layered over the one before: an incoming
 	-- tag comes in over the current one, and settles as the same frame, never handing over to another. Layers
@@ -1551,27 +1568,34 @@ function drawStrip(t)
 	if not strip.prefix then -- how much of a tag is "Swap · ", to know when it has slid out of sight
 		strip.prefix = strip.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		strip.prefix:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
-		strip.prefix:SetText("Swap \194\183 ")
 		strip.prefix:Hide()
 		strip.tagFrames = {}
 	end
-	local prefix = strip.prefix:GetStringWidth()
+	-- where a swap's tag stops: its name as far past the now line as the pull's tag and the cooldowns' labels.
+	-- "Swap · " measured on its own comes out wider than it sits in front of a name (the outline's padding), so
+	-- measure it in place
+	local function settledFor(name)
+		strip.prefix:SetText("Swap \194\183 " .. name)
+		local full = strip.prefix:GetStringWidth()
+		strip.prefix:SetText(name)
+		return -(full - strip.prefix:GetStringWidth())
+	end
 	for _, p in pairs(strip.tagFrames) do p:Hide() end
 	local taken = {}
 	-- the current tank's tag: the latest swap's, stopped where its "Swap · " has gone under the now line, or the
 	-- pull's; while that swap's tag is still sliding in, the one it covers stays under it
-	local settled = 1 - prefix
 	local last, first = s.lastSwap, s.lanes[1].tags[1]
 	strip.pinRight = 0
 	if last then
+		local settled = settledFor(last.to)
 		local px = math.max(x(last.time) - x0 + 2, settled)
 		strip.pinRight = tag(last.number, last.to, px, true)
 		if px > settled then
-			if last.number > 1 then tag(last.number - 1, last.from, settled, true) else tag(0, last.from, 1, false) end
+			if last.number > 1 then tag(last.number - 1, last.from, settledFor(last.from), true) else tag(0, last.from, 0, false) end
 			taken[#taken + 1] = {x0 + px, x0 + strip.pinRight}
 		end
 	elseif first then
-		strip.pinRight = tag(0, first.name, 1, false)
+		strip.pinRight = tag(0, first.name, 0, false)
 	end
 	for i, tg in ipairs(s.lanes[1].tags) do
 		if i > 1 then
