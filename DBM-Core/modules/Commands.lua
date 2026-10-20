@@ -304,6 +304,8 @@ SlashCmdList["DEADLYBOSSMODS"] = function(msg)
 			min = 0
 		end
 		DBM:CreatePizzaTimer(min * 60 + sec, text, permission, nil, true)
+	elseif cmd:sub(1, 2) == "cd" then
+		DBM:CooldownPlanCommand(msg:sub(3))
 	elseif cmd:sub(0,5) == "break" then
 		Break(tonumber(cmd:sub(6)) or 5)
 	elseif cmd:sub(1, 4) == "pull" then

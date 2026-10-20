@@ -72,3 +72,4 @@ modules\options\frames\InfoFrame.lua
 modules\options\frames\Range.lua
 # modules\options\frames\Nameplate.lua
 modules\options\frames\BossHealth.lua
+modules\options\frames\CooldownPlan.lua

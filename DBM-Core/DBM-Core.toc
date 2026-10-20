@@ -12,7 +12,7 @@
 ## Notes: Deadly Boss Mods
 ## Dependencies: DBM-StatusBarTimers
 ## OptionalDeps: LibStub, CallbackHandler-1.0, LibSharedMedia-3.0, LibChatAnims, LibDBIcon-1.0, LibDeflate, LibSerialize, LibGroupTalents-1.0, LibTalentQuery-1.0, ElvUI
-## SavedVariables: DBM_AllSavedOptions, DBM_MinimapIcon
+## SavedVariables: DBM_AllSavedOptions, DBM_MinimapIcon, DBM_CooldownPlans
 ## SavedVariablesPerCharacter: DBM_UsedProfile, DBM_UseDualProfile, DBM_CharSavedRevision, DBM_SavedOptions
 ## LoadOnDemand: 0
 ## DefaultState: enabled
@@ -93,6 +93,8 @@ modules\Commands.lua
 modules\Hyperlinks.lua
 modules\MinimapButton.lua
 modules\Notes.lua
+modules\CooldownData.lua
+modules\CooldownPlan.lua
 modules\Sounds.lua
 modules\UpdateReminder.lua
 
