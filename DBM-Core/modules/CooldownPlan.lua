@@ -1350,8 +1350,8 @@ local function stripPart(list, kind)
 	list.used = list.used + 1
 	local p = list[list.used]
 	if not p then
-		if kind == "line" then
-			p = strip.lineLayer:CreateTexture(nil, "OVERLAY")
+		if kind == "line" or kind == "swap" then
+			p = (kind == "swap" and strip.swapLayer or strip.lineLayer):CreateTexture(nil, "OVERLAY")
 		else
 			p = CreateFrame("Frame", nil, kind == "low" and strip.laneLow or strip.laneHigh)
 			p:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2})
@@ -1397,7 +1397,7 @@ function showStrip(rows, period, t, hasTanks)
 		local pos = saved.stripPos
 		if pos then strip:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else strip:SetPoint("TOP", 0, -120) end
 		applyLock()
-		strip.names, strip.blocks, strip.lines = {}, {used = 0}, {used = 0}
+		strip.names, strip.blocks, strip.lines, strip.swapLines = {}, {used = 0}, {used = 0}, {used = 0}
 		for i = 1, 2 do
 			strip.names[i] = strip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 			strip.names[i]:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
@@ -1424,6 +1424,11 @@ function showStrip(rows, period, t, hasTanks)
 		strip.lineLayer = CreateFrame("Frame", nil, strip)
 		strip.lineLayer:SetAllPoints()
 		strip.lineLayer:SetFrameLevel(strip.laneHigh:GetFrameLevel() + 4) -- above the cooldowns' subtrees
+		-- swap lines over the tank tags (the tag row is a level above the lines), so one coming in cuts across
+		-- the current tank's tag ahead of its own; still under the now line, a level higher
+		strip.swapLayer = CreateFrame("Frame", nil, strip)
+		strip.swapLayer:SetAllPoints()
+		strip.swapLayer:SetFrameLevel(strip.lineLayer:GetFrameLevel() + 30)
 	end
 	-- worked out a second further than shown, so what slides in before the next update is already there
 	strip.s = CP.Strip(rows, period, t, STRIP_SPAN + 1, function(spell) return raidByName[spell] end)
@@ -1436,7 +1441,7 @@ end
 function drawStrip(t)
 	local s = strip.s
 	local stop = t + STRIP_SPAN
-	for _, list in ipairs({strip.blocks, strip.trinkets, strip.lines}) do
+	for _, list in ipairs({strip.blocks, strip.trinkets, strip.lines, strip.swapLines}) do
 		for i = 1, list.used do list[i]:Hide() end
 		list.used = 0
 	end
@@ -1471,8 +1476,8 @@ function drawStrip(t)
 		p.text:ClearAllPoints()
 		p.text:SetPoint("LEFT", p.child, "LEFT", at - clipFrom, 0)
 	end
-	local function line(time, r, g, b)
-		local l = stripPart(strip.lines, "line")
+	local function line(time, r, g, b, swap)
+		local l = swap and stripPart(strip.swapLines, "swap") or stripPart(strip.lines, "line")
 		l:ClearAllPoints()
 		l:SetPoint("TOPLEFT", x(time), -3) -- into the border, which covers its ends, like the now line
 		l:SetSize(2, LANES_TOP + 2 * LANE_H + PAD - 6)
@@ -1492,7 +1497,7 @@ function drawStrip(t)
 		if h >= t and h < stop then line(h, 1, 0.55, 0.23) end
 	end
 	for _, w in ipairs(s.swaps) do
-		if w > t and w < stop then line(w, 1, 0.82, 0) end
+		if w > t and w < stop then line(w, 1, 0.82, 0, true) end
 	end
 	-- whose lane it is, in three layers: the current tank's tag pinned at the now line; above it each swap's
 	-- "Swap · Name" tag riding its swap line in, sliding over the current one; above both, the now line. Each
