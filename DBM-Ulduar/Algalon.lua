@@ -15,6 +15,14 @@ mod:AddBoolOption("HealthFrame", true) -- Collapsing Star bars, counted from the
 mod:SetBossHealthInfo() -- stars only: no Algalon bar on pull
 mod:AddSetIconOption("SetIconOnStars", nil, true, false) -- no DBM icon-setter election: every assist marks
 mod:SetUsedIcons(1, 2, 3, 4) -- star marks when no raid member holds one at pull
+-- the cooldown plan's card and timeline (DBM-Core/modules/CooldownPlan.lua): each optional, movable, lockable
+-- the buttons sit under the checkboxes: a button that comes first in its area has nothing to place itself below
+mod:GroupSpells(L.CooldownPlan, "CooldownPlanCard", "CooldownPlanStrip", "CooldownPlanLock", L.MoveCooldownPlan, L.TestCooldownPlan)
+mod:AddBoolOption("CooldownPlanCard", true)
+mod:AddBoolOption("CooldownPlanStrip", true)
+mod:AddBoolOption("CooldownPlanLock", false, nil, function() DBM.CooldownPlan.ApplyLock(mod) end)
+mod:AddButton(L.MoveCooldownPlan, function() DBM.CooldownPlan.ShowToMove(mod) end, nil, 200, 20)
+mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.TestFight(mod) end, nil, 200, 20)
 
 mod:RegisterEvents(
 	"CHAT_MSG_MONSTER_YELL",

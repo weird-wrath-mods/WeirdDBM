@@ -159,6 +159,7 @@ local PUNCH, SMASH, BANG, BANG_HOLD, SMASH_LANDS = 15.5, 25.5, 90.5, 11, 4
 local FIGHT = 360	-- Ascend to the Heavens
 local STACKS = 4	-- a tank takes 4 punches, then the other taunts
 local SWAP_DELAY = 4	-- ...this long after the 4th, leaving time to taunt again on a miss before the 5th
+local PULL_PRESS = 3	-- the first tank's big cooldown: Algalon reaches them ~2.3s after engaging (logs), plus reaction
 local SWAP_LEAD = 1	-- the incoming tank's big cooldown goes up this long before they taunt; a "Tank swap" row is that press
 local SMASH_CLEAR = 4	-- a swap with a smash landing from the press to this long after the taunt waits up to this much longer,
 local RETRY_ROOM = 9	-- but always leaving this long before the next punch: a taunt's 8s cooldown and a second to retry a miss
@@ -301,10 +302,17 @@ local function build(opts, rng)
 		if c.smashOnly then who = nil end -- the raid's, not the tank's
 		rows[#rows + 1] = {time = round(t), player = c.player, spell = c.spell, dur = c.dur, target = who, note = note, power = c.power}
 		table.insert(uses[i], t)
-		if who then
+		if who and not c.trinket then -- a trinket isn't cover: it goes up beside cooldowns, never instead of them
 			fixed[who] = fixed[who] or {}
 			table.insert(fixed[who], {t, t + c.dur})
 		end
+	end
+	-- does who already have cover somewhere in [a, b)
+	local function covers(who, a, b)
+		for _, f in ipairs(fixed[who] or {}) do
+			if f[1] < b - 0.01 and f[2] > a + 0.01 then return true end
+		end
+		return false
 	end
 	local function usable(c, who)
 		if c.role == "ext" then return not (c.notSelf and c.player == who) end -- Hand of Sacrifice can't go on its caster
@@ -312,7 +320,7 @@ local function build(opts, rng)
 	end
 
 	-- who has the boss when
-	local starts = {from}
+	local starts = {from == 0 and PULL_PRESS or from}
 	for _, t in ipairs(swaps) do starts[#starts + 1] = t end
 	local function holder(s) return tanks[(tank + s - 2) % #tanks + 1] end
 	local function holderAt(t)
@@ -367,33 +375,45 @@ local function build(opts, rng)
 	-- 2: raid-wide cooldowns on Cosmic Smash, whichever has waited longest; fire-only ones (Aura Mastery) first,
 	-- since they do nothing for the tank, and Divine Guardian (which also covers the tank) only where none is free
 	for _, hit in ipairs(CP.SmashTimes(from + RAID_LEAD_MIN, stop)) do
-		local latest, pick = hit - RAID_LEAD_MIN
+		local latest, has = hit - RAID_LEAD_MIN, false
 		for _, k in ipairs(keptRaid) do
-			if k[1] <= hit and k[2] > hit then latest = -math.huge end -- already has one
+			if k[1] <= hit and k[2] > hit then has = true end -- already has one
 		end
-		local pickKey
-		for i, c in ipairs(pool) do
-			if c.raid and free(i, latest) then
-				local k = rng and rng() or nextFree(i, 0) or 0 -- a variation tries them in any order
-				if not pick or (not pool[pick].smashOnly and c.smashOnly) or (not c.smashOnly == not pool[pick].smashOnly and k < pickKey) then
-					pick, pickKey = i, k
+		if not has then
+			local who, cands = holderAt(hit), {}
+			for i, c in ipairs(pool) do
+				if c.raid and free(i, latest) then
+					cands[#cands + 1] = {i = i, k = rng and rng() or nextFree(i, 0) or 0} -- a variation tries them in any order
 				end
 			end
-		end
-		if not pick and latest > -math.huge then smashMissed = smashMissed + 1 end
-		if pick then
-			local who, at = holderAt(hit), math.max(hit - RAID_LEAD, from)
-			if not pool[pick].smashOnly then
-				local moved = true
-				while moved do -- past every bit of cover the tank already has in the early seconds
-					moved = false
-					for _, f in ipairs(fixed[who] or {}) do
-						if f[1] < latest and f[2] > at and at < latest then at, moved = math.min(latest, f[2]), true end
+			table.sort(cands, function(a, b)
+				local A, B = pool[a.i].smashOnly and 0 or 1, pool[b.i].smashOnly and 0 or 1
+				if A ~= B then return A < B end
+				return a.k < b.k
+			end)
+			local placed = false
+			for _, cand in ipairs(cands) do
+				local c, at = pool[cand.i], math.max(hit - RAID_LEAD, from)
+				if not c.smashOnly then
+					local moved = true
+					while moved do -- past every bit of cover the tank already has in the early seconds
+						moved = false
+						for _, f in ipairs(fixed[who] or {}) do
+							if f[1] < latest and f[2] > at and at < latest then at, moved = math.min(latest, f[2]), true end
+						end
+					end
+					if covers(who, at, at + c.dur) then at = nil end -- Divine Guardian never on top of the tank's other cover
+				end
+				if at then
+					while at < latest and not free(cand.i, at) do at = at + 0.5 end
+					if free(cand.i, at) then
+						use(cand.i, at, who, "Cosmic Smash")
+						placed = true
+						break
 					end
 				end
 			end
-			while at < latest and not free(pick, at) do at = at + 0.5 end
-			use(pick, at, who, "Cosmic Smash")
+			if not placed then smashMissed = smashMissed + 1 end
 		end
 	end
 	-- 3: the rest of each tank's time, the weaker tank's stints first
@@ -422,7 +442,8 @@ local function build(opts, rng)
 			else
 				local pick, pickIdle, pickRank, soonest
 				for i, cd in ipairs(pool) do
-					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) then
+					-- only what ends before the next planned cover: cooldowns on one tank never overlap
+					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) and c + cd.dur <= (nextFixed or math.huge) + 0.01 then
 						if free(i, c) then
 							local last = -math.huge
 							for _, u in ipairs(uses[i]) do if u < c and u > last then last = u end end
@@ -431,6 +452,8 @@ local function build(opts, rng)
 							-- shared ones, which the other tank could have used
 							local rank = cd.raid and 2 or cd.role == "ext" and 1 or 0
 							if rng and rng() < 0.3 then rank = 0 end -- a variation sometimes spends what it'd normally save
+							-- one still running at the incoming tank's press overlaps it: only when nothing else fits
+							if swapAt and c + cd.dur > swapAt - SWAP_LEAD + 0.01 then rank = rank + 3 end
 							if not pick or rank < pickRank or (rank == pickRank
 								and (idle > pickIdle or (idle == pickIdle and cd.dur > pool[pick].dur))) then
 								pick, pickIdle, pickRank = i, idle, rank
@@ -645,14 +668,37 @@ end
 -- go: a use of mine that's due and not cast yet, until MATCH seconds late, when it counts as missed
 function CP.Card(rows, period, player, t)
 	local card = {}
+	-- a swap's cooldown and its taunt (CP.Taunts) are one step: the taunt shows under the cooldown as "then Taunt"
+	-- until the cooldown is cast, then takes the big line; once the taunt is due it takes it anyway, and the
+	-- cooldown drops off. A taunt with no cooldown of mine before it (an external on my swap-in) stands alone
+	local pairOf, paired = {}, {}
 	for _, r in ipairs(rows) do
-		if r.player == player and not r.done and not card.go then
-			local due = CP.NextUse(r, period, t - MATCH)
-			if due <= t and due >= t - MATCH then card.go = r end
+		if r.taunt and r.player == player then
+			for _, c in ipairs(rows) do
+				if c.player == player and c.note == "Tank swap" and math.abs(c.time + SWAP_LEAD - r.time) < 0.01 then
+					pairOf[r], paired[c] = c, r
+				end
+			end
 		end
-		if r.player == player and not r.done then
+	end
+	local function shown(r)
+		if r.player ~= player or r.done then return false end
+		if paired[r] and t >= paired[r].time then return false end
+		if pairOf[r] and not pairOf[r].done and t < r.time then return false end
+		return true
+	end
+	for _, r in ipairs(rows) do
+		if shown(r) then
+			local due = CP.NextUse(r, period, t - MATCH)
+			local now = due <= t and due >= t - MATCH
+			if r.taunt and pairOf[r] and pairOf[r].done and t <= r.time + MATCH then now = true end
+			if now and (not card.go or r.taunt) then card.go = r end
+		end
+	end
+	for _, r in ipairs(rows) do
+		if shown(r) and r ~= card.go then
 			local due = CP.NextUse(r, period, t)
-			if due >= t and r ~= card.go then
+			if due >= t then
 				if not card.next or due < card.nextIn + t then
 					card.later, card.laterIn = card.next, card.nextIn
 					card.next, card.nextIn = r, due - t
@@ -662,6 +708,8 @@ function CP.Card(rows, period, player, t)
 			end
 		end
 	end
+	local top = card.go or card.next
+	card.thenTaunt = top and paired[top] and not paired[top].done or nil
 	return card
 end
 
@@ -674,6 +722,18 @@ function CP.Weaker(tanks, maxHealth)
 end
 
 -- who the plan has on the boss at fight time t: the last swap's tank, else the first row's target
+-- the taunt that goes with each swap-in of player's (the big cooldown's press, then the taunt a second later),
+-- for their card, which just says "Taunt"; cast is their class's taunt, to see it done
+function CP.Taunts(rows, player, cast)
+	local out = {}
+	for _, r in ipairs(rows) do
+		if r.note == "Tank swap" and r.target == player then
+			out[#out + 1] = {time = r.time + SWAP_LEAD, player = player, spell = "Taunt", cast = cast, taunt = true}
+		end
+	end
+	return out
+end
+
 function CP.Holder(rows, t)
 	local who
 	for _, r in ipairs(rows) do
@@ -685,10 +745,12 @@ end
 
 -- The timeline strip from fight time t for span seconds: one tank lane showing whoever has the boss (the
 -- incoming tank's cover from their press, the outgoing tank's cut off there), a tag naming the tank at each
--- handover, a raid lane with raid-wide cooldowns, Cosmic Smash impacts and swaps (taunts). A hole is just
--- empty lane.
+-- handover, a raid lane with raid-wide cooldowns (only there, though Divine Guardian also covers the tank:
+-- it keeps the tank lane to what's specific to the tank), Cosmic Smash impacts and swaps (taunts). A hole
+-- is just empty lane. Blocks keep their real start and end past the view's edges: the strip clips them, so
+-- one slides out under the now line instead of shrinking.
 -- {lanes = {{name = "Tank", blocks = {{from, to, row}}, tags = {{time, name}}}, {name = "Raid", blocks}},
---  smashes, swaps}
+--  smashes, swaps, lastSwap = {time, from, to, number} (the latest swap at or before t)}
 function CP.Strip(rows, period, t, span, isRaid)
 	local stop = t + span
 	local tank, raid = {name = "Tank", blocks = {}, tags = {}}, {name = "Raid", blocks = {}}
@@ -699,45 +761,74 @@ function CP.Strip(rows, period, t, span, isRaid)
 		local dur = r.dur or CP.Info(r.player, r.spell) or 0
 		local due = CP.NextUse(r, period, t - dur)
 		while due < stop and due + dur > t do
-			if r.target then
+			if r.target and not isRaid(r.spell) then
 				uses[r.target] = uses[r.target] or {}
 				table.insert(uses[r.target], {from = due, to = due + dur, row = r})
 			end
-			if isRaid(r.spell) then table.insert(raid.blocks, {from = math.max(due, t), to = math.min(due + dur, stop), row = r}) end
-			if r.note == "Tank swap" then taunts[#taunts + 1] = due + SWAP_LEAD end
+			if isRaid(r.spell) then table.insert(raid.blocks, {from = due, to = due + dur, row = r}) end
 			if not period then break end
 			due = due + period
 		end
+		-- the taunts from a span back on, whether or not their cooldowns are still in view: the latest one says
+		-- whose tag is current long after the press has run out
+		if r.note == "Tank swap" then
+			local press = CP.NextUse(r, period, t - span - SWAP_LEAD)
+			while press < stop do
+				taunts[#taunts + 1] = press + SWAP_LEAD
+				if not period then break end
+				press = press + period
+			end
+		end
 	end
 	table.sort(taunts)
+	-- the swap that just happened, so its tag can finish sliding under the now line
+	-- number: a swap's place in the whole plan, not among those in view (which drop off the left), so each tag
+	-- keeps one frame and layer from sliding in to settling
+	local function numberOf(w)
+		local n = 0
+		for _, r in ipairs(rows) do
+			if r.note == "Tank swap" and (period and CP.NextUse(r, period, w - span) or r.time) + SWAP_LEAD <= w + 0.01 then n = n + 1 end
+		end
+		return n
+	end
+	local number = {[1] = numberOf(t)}	-- by edge
+	for _, w in ipairs(taunts) do
+		if w <= t then strip.lastSwap = {time = w, from = CP.Holder(rows, w - 0.01), to = CP.Holder(rows, w), number = numberOf(w)} end
+	end
 	-- who has the boss when: from t, then from each taunt in view
 	local edges = {t}
 	for _, w in ipairs(taunts) do
-		if w > t and w < stop then edges[#edges + 1] = w strip.swaps[#strip.swaps + 1] = w end
+		if w > t and w < stop then
+			edges[#edges + 1] = w
+			number[#edges] = numberOf(w)
+			strip.swaps[#strip.swaps + 1] = w
+		end
 	end
 	edges[#edges + 1] = stop
 	for i = 1, #edges - 1 do
 		local a, b = edges[i], edges[i + 1]
 		local who = CP.Holder(rows, a)
-		tank.tags[#tank.tags + 1] = {time = a, name = who}
+		tank.tags[#tank.tags + 1] = {time = a, name = who, number = number[i]}
 		local mine = uses[who] or {}
 		table.sort(mine, function(x, y) return x.from < y.from end)
 		-- the next tank's lane starts at their first press before the taunt
-		local nextStart = b
+		local nextStart = math.huge
 		if i < #edges - 1 then
+			nextStart = b
 			for _, u in ipairs(uses[CP.Holder(rows, b)] or {}) do
 				if u.from < b and u.to > b and u.from >= b - SWAP_LEAD - 0.01 then nextStart = math.min(nextStart, u.from) end
 			end
 		end
-		local laneFrom = a
+		local laneFrom = -math.huge
 		if i > 1 then
+			laneFrom = a
 			for _, u in ipairs(mine) do
 				if u.from < a and u.to > a and u.from >= a - SWAP_LEAD - 0.01 then laneFrom = math.min(laneFrom, u.from) end
 			end
 		end
 		for _, u in ipairs(mine) do
-			local from, to = math.max(u.from, laneFrom, t), math.min(u.to, nextStart, stop)
-			if to > from then tank.blocks[#tank.blocks + 1] = {from = from, to = to, row = u.row} end
+			local from, to = math.max(u.from, laneFrom), math.min(u.to, nextStart)
+			if to > from and to > t and from < stop then tank.blocks[#tank.blocks + 1] = {from = from, to = to, row = u.row} end
 		end
 	end
 	return strip
@@ -910,13 +1001,53 @@ end
 
 -- fight
 local active, pullTime, done = nil, 0, {}
+-- each tanking class's taunt (Spell IDs: server source for 62124 and 355, combat logs for 56222 and 6795)
+local TAUNT = {DEATHKNIGHT = 56222, PALADIN = 62124, WARRIOR = 355, DRUID = 6795}
+-- the plan's rows plus my taunts at my swap-ins, for the card; kept while the rows are, so a taunt stays done
+local function cardRows(rows)
+	if not active or active.rows ~= rows then return rows end
+	if active.cardFor ~= rows then
+		local name = GetSpellInfo(TAUNT[select(2, UnitClass("player"))] or 0)
+		active.taunts = name and CP.Taunts(rows, playerName, name) or {}
+		active.cardRows = {}
+		for _, r in ipairs(rows) do active.cardRows[#active.cardRows + 1] = r end
+		for _, r in ipairs(active.taunts) do active.cardRows[#active.cardRows + 1] = r end
+		active.cardFor = rows
+	end
+	return active.cardRows
+end
+local TEST_CAST = 2.5	-- in a mock fight (CP.TestFight) each press lands this long after it's due, so NOW shows
 local ticker = CreateFrame("Frame")
 ticker:Hide()
 
 -- what happened this pull, kept for the re-plan: casts in fight time, deaths, no-shows, Phase Punch's tank
 local fight = {uses = {}, dead = {}, missed = {}}
 local replanSoon
-local card, showCard, strip, showStrip, stop
+local card, showCard, strip, showStrip, drawStrip, stop
+
+-- the boss whose plan is showing: its own options (Algalon's) say whether the card and the timeline show,
+-- and whether they're locked in place. A boss without them shows both, movable.
+local shownFor
+local function modFor(id)
+	for _, m in ipairs(DBM.Mods) do
+		if tostring(m.id):lower() == id then return m end
+	end
+end
+local function allowed(name) return not (shownFor and shownFor.Options[name] == false) end
+-- a player's class colour: the mock fight's stand-in roster, else the raid's
+local function classColor(name)
+	local class = active and active.classes and active.classes[name]
+	if not class then
+		local unit = DBM:GetRaidUnitId(name)
+		class = unit and select(2, UnitClass(unit))
+	end
+	return class and RAID_CLASS_COLORS[class]
+end
+local function applyLock()
+	local free = not (shownFor and shownFor.Options.CooldownPlanLock)
+	if card then card:EnableMouse(free) end
+	if strip then strip:EnableMouse(free) end
+end
 
 -- the two tanks a plan is for: whoever has its first row, and whoever has its first swap
 local function planTanks(rows)
@@ -931,7 +1062,10 @@ end
 local elapsed = 0
 ticker:SetScript("OnUpdate", function(_, e)
 	elapsed = elapsed + e
-	if elapsed < 0.2 then return end
+	if elapsed < 0.2 then -- between the stepped work, the timeline still slides every frame
+		if strip and strip:IsShown() and strip.s then drawStrip(GetTime() - pullTime) end
+		return
+	end
 	elapsed = 0
 	if not DBM.Options.CooldownPlanEnabled then
 		stop()
@@ -948,10 +1082,19 @@ ticker:SetScript("OnUpdate", function(_, e)
 			end
 		end
 	end
+	if active.test then -- a mock fight: everyone presses on time, give or take a reaction
+		if t > FIGHT then stop() return end
+		for _, row in ipairs(active.rows) do
+			if t >= row.time + TEST_CAST then row.done = true end
+		end
+		for _, row in ipairs(active.taunts or {}) do
+			if t >= row.time + TEST_CAST then row.done = true end
+		end
+	end
 	for _, row in ipairs(active.rows) do
 		local due = CP.NextUse(row, active.period, t)
 		local left, key = due - t, row.player .. "\0" .. row.spell .. "\0" .. due
-		if left <= CHECKAHEAD and not done["check" .. key] then
+		if left <= CHECKAHEAD and not done["check" .. key] and not active.test then
 			done["check" .. key] = true
 			local why = CP.NotReady(row.player, row.spell, now + left)
 			if why then
@@ -964,7 +1107,7 @@ ticker:SetScript("OnUpdate", function(_, e)
 			replanSoon()
 		end
 	end
-	showCard(active.rows, active.period, t)
+	showCard(cardRows(active.rows), active.period, t)
 	showStrip(active.rows, active.period, t, planTanks(active.rows) ~= nil)
 end)
 
@@ -1048,6 +1191,7 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	active = CP.Parse(text)
 	if #active.rows == 0 then active = nil return end
 	active.from = saved.planFrom[tostring(mod.id):lower()]
+	shownFor = mod
 	-- the plan's sender re-plans when cooldowns go off plan; a looping plan has no fight to re-plan
 	active.live = active.from == playerName and not active.period and planTanks(active.rows) ~= nil
 	-- plan time 0 is when Algalon starts fighting: 26s of roleplay on the lockout's first pull, 8.5s after
@@ -1072,7 +1216,10 @@ end
 -- what a use needs said on the card: the aura for Aura Mastery, the target for an external, else nothing
 local function sub(r)
 	if smashOnlyByName[r.spell] then return "Fire Res" end
-	if roleByName[r.spell] == "ext" and not raidByName[r.spell] and r.target and r.target ~= playerName then return "on " .. r.target end
+	if roleByName[r.spell] == "ext" and not raidByName[r.spell] and r.target and r.target ~= playerName then
+		local cc = classColor(r.target)
+		return "on " .. (cc and ("|cff%02x%02x%02x%s|r"):format(cc.r * 255, cc.g * 255, cc.b * 255, r.target) or r.target)
+	end
 	return ""
 end
 local function countdown(left) return left < 60 and tostring(math.ceil(left)) or clock(left) end
@@ -1081,7 +1228,7 @@ local function countdown(left) return left < 60 and tostring(math.ceil(left)) or
 -- line; right-click hides it
 function showCard(rows, period, t, prepull)
 	local c = CP.Card(rows, period, playerName, t)
-	if not c.go and not c.next then
+	if not allowed("CooldownPlanCard") or not c.go and not c.next then
 		if card then card:Hide() end
 		return
 	end
@@ -1094,7 +1241,6 @@ function showCard(rows, period, t, prepull)
 		})
 		card:SetBackdropColor(0, 0, 0, 0.75)
 		card:SetMovable(true)
-		card:EnableMouse(true)
 		card:RegisterForDrag("LeftButton")
 		card:SetScript("OnDragStart", card.StartMoving)
 		card:SetScript("OnDragStop", function(self)
@@ -1105,6 +1251,7 @@ function showCard(rows, period, t, prepull)
 		card:SetScript("OnMouseUp", function(self, button) if button == "RightButton" then self:Hide() end end)
 		local pos = saved.cardPos
 		if pos then card:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else card:SetPoint("CENTER", 320, -160) end
+		applyLock()
 		card.num = card:CreateFontString(nil, "ARTWORK", "NumberFontNormalHuge")
 		card.num:SetWidth(54)
 		card.num:SetJustifyH("CENTER")
@@ -1148,7 +1295,7 @@ function showCard(rows, period, t, prepull)
 		if c.nextIn <= 10 then card.num:SetTextColor(1, 0.82, 0) else card.num:SetTextColor(0.75, 0.75, 0.75) end
 	end
 	card.spell:SetText(r.spell)
-	card.sub:SetText(sub(r))
+	card.sub:SetText(c.thenTaunt and "then Taunt" or sub(r))
 	-- the press after that: the next one when the big line is NOW, else the one after the next
 	local after, afterIn = c.go and c.next or c.later, c.go and c.nextIn or c.laterIn
 	card.rule:ClearAllPoints()
@@ -1168,8 +1315,17 @@ function showCard(rows, period, t, prepull)
 end
 
 -- timeline strip: the next STRIP_SPAN seconds of the plan, on until /dbm cd strip turns it off
-local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H = 40, 420, 90, 18, 12
-local LANES_TOP = 20 + TAG_H	-- smash labels, then the tank tags, then the lanes
+local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H, PAD = 40, 520, 36, 24, 14, 5
+local LANES_TOP = PAD + TAG_H + 1	-- one row for the tank tags and the smash labels, then the lanes
+local TAG_BG = TAG_H + 1.5	-- a tag's colour reaches a little below its text row, near the Tank lane
+-- short names, so a block's label fits it
+local STRIP_SHORT = {
+	[48792] = "Icebound", [498] = "Div Prot", [871] = "Shield Wall", [61336] = "Surv Inst", [55233] = "Vamp Blood",
+	[51271] = "Unbr Armor", [12975] = "Last Stand", [22812] = "Barkskin", [6940] = "Hand of Sac", [1038] = "Hand of Salv",
+	[64205] = "DSac", [48788] = "Lay on Hands", [33206] = "Pain Sup", [47788] = "Guard Spirit", [31821] = "AuraM",
+	[64763] = "Heart of Iron",
+}
+local shortByName = {}
 -- one colour per cooldown, by cast spell; no yellows (the swap marks) or gold (the outline on my own uses)
 local STRIP_COLORS = {
 	[48792] = {0.18, 0.44, 0.71}, -- Icebound Fortitude
@@ -1195,13 +1351,21 @@ local function stripPart(list, kind)
 	local p = list[list.used]
 	if not p then
 		if kind == "line" then
-			p = strip:CreateTexture(nil, "OVERLAY")
+			p = strip.lineLayer:CreateTexture(nil, "OVERLAY")
 		else
-			p = CreateFrame("Frame", nil, strip)
+			p = CreateFrame("Frame", nil, kind == "low" and strip.laneLow or strip.laneHigh)
 			p:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2})
-			p.text = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-			p.text:SetPoint("LEFT", 3, 0)
-			p.text:SetPoint("RIGHT", -2, 0)
+			-- the label sits in a scroll frame the size of the part, so a long one is cut at the edge: a font
+			-- string given a width would shorten itself with "..." instead
+			p.clip = CreateFrame("ScrollFrame", nil, p)
+			p.clip:SetPoint("TOPLEFT", 3, 0)
+			p.clip:SetPoint("BOTTOMRIGHT", -1, 0)
+			p.child = CreateFrame("Frame", nil, p.clip)
+			p.child:SetSize(400, 30)
+			p.clip:SetScrollChild(p.child)
+			p.text = p.child:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			p.text:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+			p.text:SetPoint("LEFT", p.child, "LEFT", 0, 0)
 			p.text:SetJustifyH("LEFT")
 		end
 		list[list.used] = p
@@ -1210,20 +1374,19 @@ local function stripPart(list, kind)
 	return p
 end
 function showStrip(rows, period, t, hasTanks)
-	if not DBM.Options.CooldownPlanStrip or not hasTanks then
+	if not allowed("CooldownPlanStrip") or not hasTanks then
 		if strip then strip:Hide() end
 		return
 	end
 	if not strip then
 		strip = CreateFrame("Frame", "DBMCooldownPlanStrip", UIParent)
-		strip:SetSize(LABEL_W + STRIP_W + 16, 2 * LANE_H + TAG_H + 52) -- smash labels above, tank tags, two lanes, swap labels below
+		strip:SetSize(LABEL_W + STRIP_W + 2 * PAD + 4, LANES_TOP + 2 * LANE_H + PAD + 2)
 		strip:SetBackdrop({
 			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 			tile = true, tileSize = 16, edgeSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
 		})
 		strip:SetBackdropColor(0, 0, 0, 0.75)
 		strip:SetMovable(true)
-		strip:EnableMouse(true)
 		strip:RegisterForDrag("LeftButton")
 		strip:SetScript("OnDragStart", strip.StartMoving)
 		strip:SetScript("OnDragStop", function(self)
@@ -1233,76 +1396,232 @@ function showStrip(rows, period, t, hasTanks)
 		end)
 		local pos = saved.stripPos
 		if pos then strip:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else strip:SetPoint("TOP", 0, -120) end
-		strip.names, strip.blocks, strip.lines, strip.marks = {}, {used = 0}, {used = 0}, {used = 0}
+		applyLock()
+		strip.names, strip.blocks, strip.lines = {}, {used = 0}, {used = 0}
 		for i = 1, 2 do
-			strip.names[i] = strip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-			strip.names[i]:SetPoint("TOPLEFT", 10, -LANES_TOP - (i - 1) * LANE_H - 3)
+			strip.names[i] = strip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+			strip.names[i]:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+			strip.names[i]:SetPoint("LEFT", strip, "TOPLEFT", PAD + 2, -LANES_TOP - (i - 1) * LANE_H - LANE_H / 2)
 		end
+		-- the lanes are clipped from the now line on, so a cooldown running out slides away under it whole,
+		-- border and label, rather than shrinking to a stub; its blocks reach to about level +5, so the
+		-- smash and swap lines go just above them, the tags above those
+		strip.laneClip = CreateFrame("ScrollFrame", nil, strip)
+		strip.laneClip:SetPoint("TOPLEFT", LABEL_W + PAD + 2, -LANES_TOP)
+		strip.laneClip:SetSize(STRIP_W + 2, 2 * LANE_H)
+		strip.laneClip:SetFrameLevel(strip:GetFrameLevel() + 1)
+		strip.laneRow = CreateFrame("Frame", nil, strip.laneClip)
+		strip.laneRow:SetSize(STRIP_W + 2, 2 * LANE_H)
+		strip.laneClip:SetScrollChild(strip.laneRow)
+		-- trinkets on their own layer under the other cooldowns (each block's subtree is three levels deep), so
+		-- one overlapping a cooldown is always the one hidden, never drawn in whatever order the pool gives
+		strip.laneLow = CreateFrame("Frame", nil, strip.laneRow)
+		strip.laneLow:SetAllPoints()
+		strip.laneHigh = CreateFrame("Frame", nil, strip.laneRow)
+		strip.laneHigh:SetAllPoints()
+		strip.laneHigh:SetFrameLevel(strip.laneLow:GetFrameLevel() + 4)
+		strip.trinkets = {used = 0}
+		strip.lineLayer = CreateFrame("Frame", nil, strip)
+		strip.lineLayer:SetAllPoints()
+		strip.lineLayer:SetFrameLevel(strip.laneHigh:GetFrameLevel() + 4) -- above the cooldowns' subtrees
 	end
-	local s = CP.Strip(rows, period, t, STRIP_SPAN, function(spell) return raidByName[spell] end)
-	for _, list in ipairs({strip.blocks, strip.lines, strip.marks}) do
+	-- worked out a second further than shown, so what slides in before the next update is already there
+	strip.s = CP.Strip(rows, period, t, STRIP_SPAN + 1, function(spell) return raidByName[spell] end)
+	strip.s.smashLabels = CP.SmashTimes(t - 5, t + STRIP_SPAN + 1) -- and the ones whose label is still sliding out
+	drawStrip(t)
+	strip:Show()
+end
+
+-- the timeline placed at fight time t, from what showStrip last worked out: cheap enough for every frame
+function drawStrip(t)
+	local s = strip.s
+	local stop = t + STRIP_SPAN
+	for _, list in ipairs({strip.blocks, strip.trinkets, strip.lines}) do
 		for i = 1, list.used do list[i]:Hide() end
 		list.used = 0
 	end
-	local x0 = LABEL_W + 8
-	local function x(time) return x0 + (time - t) / STRIP_SPAN * STRIP_W end
-	local function block(lane, from, to, color, a, text, mine)
-		local p = stripPart(strip.blocks)
+	local x0 = LABEL_W + PAD + 2
+	-- everything moves by one shift, in whole screen pixels: placed and rounded one by one, a bar and its label
+	-- round at different moments and wobble against each other
+	local ppu = strip:GetEffectiveScale() * (tonumber((GetCVar("gxResolution") or ""):match("%d+x(%d+)")) or 768) / 768
+	local perSecond = STRIP_W / STRIP_SPAN * ppu	-- pixels
+	local nowPx = math.floor(t * perSecond + 0.5)
+	local function x(time) return x0 + (math.floor(time * perSecond + 0.5) - nowPx) / ppu end
+	local function block(lane, from, to, color, a, text, mine, low)
+		local p = low and stripPart(strip.trinkets, "low") or stripPart(strip.blocks)
 		p:ClearAllPoints()
-		p:SetPoint("TOPLEFT", x(from), -LANES_TOP - (lane - 1) * LANE_H - 1)
-		p:SetSize(math.max(1, x(to) - x(from)), LANE_H - 2)
+		p:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(from) - x0, -(lane - 1) * LANE_H - 1)
+		p:SetSize(math.max(1, x(to) - x(from) - 1), LANE_H - 2) -- a pixel apart, so neighbours read as two
+		p.child:SetHeight(LANE_H - 2)
 		p:SetBackdropColor(color[1], color[2], color[3], a)
 		p:SetBackdropBorderColor(1, 0.82, 0, mine and 1 or 0)
+		p.text:SetFont("Fonts\\ARIALN.TTF", 12, "OUTLINE") -- narrow, so a caster's name fits beside the spell
 		p.text:SetText(text or "")
 		p.text:SetTextColor(1, 1, 1)
+		-- a bar sliding out under the now line keeps its label readable just past the line, until the bar's
+		-- right edge catches it and pushes it off too
+		local left, right = x(from), x(to) - 1
+		local at = math.max(left + 3, math.min(x0 + 3, right - 5 - p.text:GetStringWidth())) -- 5px clear of the next label
+		-- the label's own clip starts at the now line: the lanes' clip doesn't reach into it
+		local clipFrom = math.max(left + 3, x0)
+		p.clip:ClearAllPoints()
+		p.clip:SetPoint("TOPLEFT", clipFrom - left, 0)
+		p.clip:SetPoint("BOTTOMRIGHT", -1, 0)
+		if right - 1 - clipFrom < 1 then p.clip:Hide() else p.clip:Show() end
+		p.text:ClearAllPoints()
+		p.text:SetPoint("LEFT", p.child, "LEFT", at - clipFrom, 0)
 	end
-	local function label(anchor, point, relPoint, dx, w, text, r, g, b)
-		local m = stripPart(strip.marks)
-		m:ClearAllPoints()
-		m:SetPoint(point, anchor, relPoint, dx, 0)
-		m:SetSize(w, 12)
-		m:SetBackdropColor(0, 0, 0, 0)
-		m:SetBackdropBorderColor(0, 0, 0, 0)
-		m.text:SetText(text)
-		m.text:SetTextColor(r, g, b)
-		return m
-	end
-	local function line(time, r, g, b, text, below)
+	local function line(time, r, g, b)
 		local l = stripPart(strip.lines, "line")
 		l:ClearAllPoints()
-		l:SetPoint("TOPLEFT", x(time), -20)
-		l:SetSize(2, TAG_H + 2 * LANE_H + 4)
-		l:SetTexture(r, g, b, 0.9)
-		if text then
-			if below then label(l, "TOPLEFT", "BOTTOMLEFT", -20, 44, text, r, g, b) else label(l, "BOTTOMLEFT", "TOPLEFT", -20, 44, text, r, g, b) end
-		end
+		l:SetPoint("TOPLEFT", x(time), -PAD)
+		l:SetSize(2, LANES_TOP - PAD + 2 * LANE_H)
+		l:SetTexture(r, g, b, 0.6) -- see-through enough to read a label behind it
 	end
 	for i, lane in ipairs(s.lanes) do
 		strip.names[i]:SetText(lane.name)
 		for _, b in ipairs(lane.blocks) do
 			local r = b.row
-			local short = r.spell .. ((lane.name == "Raid" or r.player ~= r.target) and (" (" .. r.player .. ")") or "")
-			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, 0.9, short, r.player == playerName)
+			-- who presses it, unless it's the tank's own; cut at the block's edge when it doesn't fit
+			local label = shortByName[r.spell] or r.spell
+			if r.player ~= r.target or raidByName[r.spell] then label = label .. " |cffe6e6e6\194\183 " .. r.player .. "|r" end
+			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, 0.9, label, r.player == playerName, trinketByName[r.spell])
 		end
 	end
-	-- whose lane it is: a tag in the tank's class colour at each handover
-	for _, tag in ipairs(s.lanes[1].tags) do
-		local unit = DBM:GetRaidUnitId(tag.name)
-		local cc = unit and RAID_CLASS_COLORS[select(2, UnitClass(unit)) or ""] or {r = 0.6, g = 0.6, b = 0.7}
-		local p = stripPart(strip.blocks)
-		p:ClearAllPoints()
-		p:SetPoint("TOPLEFT", x(tag.time) + 2, -20)
-		p:SetSize(70, TAG_H - 1)
-		p:SetBackdropColor(cc.r, cc.g, cc.b, 0.9)
-		p:SetBackdropBorderColor(0, 0, 0, 0)
-		p.text:SetText(tag.name)
-		local light = cc.r * 0.3 + cc.g * 0.59 + cc.b * 0.11 > 0.6
-		p.text:SetTextColor(light and 0 or 1, light and 0 or 1, light and 0 or 1)
+	for _, h in ipairs(s.smashes) do
+		if h >= t and h < stop then line(h, 1, 0.55, 0.23) end
 	end
-	for _, h in ipairs(s.smashes) do line(h, 1, 0.55, 0.23, "Smash") end
-	for _, w in ipairs(s.swaps) do line(w, 1, 0.82, 0, "Swap", true) end
-	line(t, 1, 1, 1)
-	strip:Show()
+	for _, w in ipairs(s.swaps) do
+		if w > t and w < stop then line(w, 1, 0.82, 0) end
+	end
+	-- whose lane it is, in three layers: the current tank's tag pinned at the now line; above it each swap's
+	-- "Swap · Name" tag riding its swap line in, sliding over the current one; above both, the now line. Each
+	-- tag is cut at the now line, so "Swap · " slides away under it, and once it's gone that tag is the pinned
+	-- one. Nothing pops in or out.
+	if not strip.tagRow then
+		-- a plain frame, not a scroll frame: a tag's colour moving inside a scroll frame drew 2px past its own
+		-- bottom, and snapped back when it stopped
+		strip.tagRow = CreateFrame("Frame", nil, strip)
+		strip.tagRow:SetPoint("TOPLEFT", x0, -PAD)
+		strip.tagRow:SetSize(STRIP_W + 2, TAG_BG)
+		strip.tagRow:SetFrameLevel(strip.lineLayer:GetFrameLevel() + 1)
+		strip.top = CreateFrame("Frame", nil, strip)
+		strip.top:SetAllPoints()
+		strip.top:SetFrameLevel(strip.tagRow:GetFrameLevel() + 30) -- over the tags (three levels a tag in view)
+		strip.now = strip.top:CreateTexture(nil, "OVERLAY")
+		strip.now:SetTexture(1, 1, 1, 0.9)
+		strip.now:SetPoint("TOPLEFT", x0, -PAD)
+		strip.now:SetSize(2, LANES_TOP - PAD + 2 * LANE_H)
+	end
+	-- a frame per tag, by swap number (0: the tank at the pull), each layered over the one before: an incoming
+	-- tag comes in over the current one, and settles as the same frame, never handing over to another. Layers
+	-- count from the oldest tag in view, so a long fight's swap numbers never climb over the now line
+	local base = s.lastSwap and math.max(0, s.lastSwap.number - 1) or 0
+	local function tag(number, name, px, swap)
+		local p = strip.tagFrames[number]
+		if not p then
+			p = CreateFrame("Frame", nil, strip.tagRow)
+			p:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8"})
+			-- the text in a scroll frame the size of the tag, which starts at the now line: the colour isn't in
+			-- one, only the text, which draws true there
+			p.clip = CreateFrame("ScrollFrame", nil, p)
+			p.clip:SetAllPoints()
+			p.child = CreateFrame("Frame", nil, p.clip)
+			p.child:SetSize(400, TAG_BG)
+			p.clip:SetScrollChild(p.child)
+			p.text = p.child:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			p.text:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+			strip.tagFrames[number] = p
+		end
+		local cc = classColor(name) or {r = 0.6, g = 0.6, b = 0.7}
+		p:SetBackdropColor(cc.r, cc.g, cc.b, 1)
+		p.text:SetText((swap and "Swap \194\183 " or "") .. name)
+		p.text:SetTextColor(1, 1, 1) -- the outline keeps white readable on any class colour
+		local w = p.text:GetStringWidth() + 6
+		local left = math.max(px, 0) -- the now line
+		p:SetFrameLevel(strip.tagRow:GetFrameLevel() + 1 + 3 * (number - base))
+		p:ClearAllPoints()
+		p:SetPoint("TOPLEFT", left, 0)
+		p:SetSize(math.max(1, px + w - left), TAG_BG)
+		p.text:ClearAllPoints()
+		p.text:SetPoint("LEFT", p.child, "TOPLEFT", px + 3 - left, -TAG_H / 2) -- centred on the text row
+		p:Show()
+		return px + w
+	end
+	if not strip.prefix then -- how much of a tag is "Swap · ", to know when it has slid out of sight
+		strip.prefix = strip.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		strip.prefix:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+		strip.prefix:SetText("Swap \194\183 ")
+		strip.prefix:Hide()
+		strip.tagFrames = {}
+	end
+	local prefix = strip.prefix:GetStringWidth()
+	for _, p in pairs(strip.tagFrames) do p:Hide() end
+	local taken = {}
+	-- the current tank's tag: the latest swap's, stopped where its "Swap · " has gone under the now line, or the
+	-- pull's; while that swap's tag is still sliding in, the one it covers stays under it
+	local settled = 1 - prefix
+	local last, first = s.lastSwap, s.lanes[1].tags[1]
+	strip.pinRight = 0
+	if last then
+		local px = math.max(x(last.time) - x0 + 2, settled)
+		strip.pinRight = tag(last.number, last.to, px, true)
+		if px > settled then
+			if last.number > 1 then tag(last.number - 1, last.from, settled, true) else tag(0, last.from, 1, false) end
+			taken[#taken + 1] = {x0 + px, x0 + strip.pinRight}
+		end
+	elseif first then
+		strip.pinRight = tag(0, first.name, 1, false)
+	end
+	for i, tg in ipairs(s.lanes[1].tags) do
+		if i > 1 then
+			local px = x(tg.time) - x0 + 2
+			taken[#taken + 1] = {x0 + px, x0 + tag(tg.number, tg.name, px, true)}
+		end
+	end
+	for _, w in ipairs(s.swaps) do
+		if w > t and w < stop then taken[#taken + 1] = {x(w) - 1, x(w) + 3} end -- the swap line too
+	end
+	-- "Smash" beside its line, unless a swap's tag or line is in the way: the smash is usually covered anyway,
+	-- and its line stays. It slides in at the right edge and out under the pinned tag: clipped from the tag's
+	-- right edge rather than layered under it, so a label reaching it is cut where the tag begins
+	if not strip.smashClip then
+		strip.smashClip = CreateFrame("ScrollFrame", nil, strip)
+		strip.smashClip:SetFrameLevel(strip.lineLayer:GetFrameLevel())
+		strip.smashRow = CreateFrame("Frame", nil, strip.smashClip)
+		strip.smashRow:SetSize(STRIP_W + 2, TAG_H)
+		strip.smashClip:SetScrollChild(strip.smashRow)
+		strip.smashLabels = {}
+	end
+	local cut = math.max(0, strip.pinRight)
+	strip.smashClip:ClearAllPoints()
+	strip.smashClip:SetPoint("TOPLEFT", x0 + cut, -PAD)
+	strip.smashClip:SetSize(STRIP_W + 2 - cut, TAG_H)
+	for _, f in ipairs(strip.smashLabels) do f:Hide() end
+	local m = 0
+	for _, h in ipairs(s.smashLabels) do
+		local from = x(h) + 3
+		if from < x0 + STRIP_W + 2 then
+			m = m + 1
+			local f = strip.smashLabels[m]
+			if not f then
+				f = strip.smashRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+				f:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+				f:SetTextColor(1, 0.55, 0.23)
+				f:SetText("Smash")
+				strip.smashLabels[m] = f
+			end
+			local w, clear = f:GetStringWidth() + 6, true
+			for _, span in ipairs(taken) do
+				if from < span[2] and from + w > span[1] then clear = false end
+			end
+			if clear then
+				f:ClearAllPoints()
+				f:SetPoint("LEFT", strip.smashRow, "LEFT", from - x0 - cut, 0)
+				f:Show()
+			end
+		end
+	end
 end
 
 -- what I'm down for in a plan, so nobody learns it from the first warning sign
@@ -1314,13 +1633,79 @@ local function tellMine(id)
 	for _, r in ipairs(plan.rows) do
 		if r.player == playerName then list[#list + 1] = clock(r.time) .. " " .. r.spell .. reason(r) end
 	end
-	if not active then showCard(plan.rows, plan.period, 0, true) end
+	if not active then
+		shownFor = modFor(id)
+		showCard(plan.rows, plan.period, 0, true)
+	end
 	if #list > 0 then
 		DBM:AddMsg(("Your cooldowns on %s (%d):"):format(id, #list))
 		for _, line in ipairs(list) do DBM:AddMsg("  " .. line) end
 	end
 end
 CP.tellMine = tellMine
+
+-- a boss's options: lock or free the card and timeline at once; "Move" brings both up with a stand-in plan
+-- (or hides them again) so they can be placed outside a fight
+function CP.ApplyLock(mod)
+	shownFor = shownFor or mod
+	applyLock()
+end
+-- a mock fight with a stand-in raid (the usual roster, me as myself or its holy paladin), drawn through the real card and
+-- timeline from the pull's 8.5s intro to Ascend, to see how they look and move; again to stop it
+function CP.TestFight(mod)
+	if active and not active.test then return end -- a real pull is on
+	if active then stop() return end
+	-- you play yourself if you're in the roster, else its holy paladin
+	local me = playerName
+	for _, name in ipairs({"Onaqui", "Dracohouston", "Stickboard", "Illithris", "Halosylvan"}) do
+		if name == me then me = "Shapiffany" end
+	end
+	-- power (% damage reduction) as players' clients report it: the planner pairs trinkets with the weakest
+	local power = {[48792] = 51, [55233] = 30, [64763] = 10, [498] = 50, [64205] = 20, [6940] = 40, [1038] = 20, [31821] = 15, [33206] = 40}
+	local function C(player, spell, dur, cd, role, flag, flag2)
+		local c = {player = player, spell = GetSpellInfo(spell) or tostring(spell), dur = dur, cd = cd, role = role, power = power[spell]}
+		if flag then c[flag] = true end
+		if flag2 then c[flag2] = true end
+		return c
+	end
+	local hos = 6940 -- Hand of Sacrifice: never on its caster
+	local pool = {
+		C("Onaqui", 48792, 15, 120, "big"), C("Onaqui", 55233, 15, 60, "self"), C("Onaqui", 64763, 20, 120, "self", "trinket"),
+		C("Dracohouston", 498, 15, 120, "big"), C("Dracohouston", 64763, 20, 120, "self", "trinket"),
+		C("Dracohouston", 64205, 6, 120, "ext", "raid"), C("Dracohouston", hos, 12, 120, "ext", "notSelf"), C("Dracohouston", 1038, 10, 120, "self"),
+		C(me, 64205, 6, 120, "ext", "raid"), C(me, hos, 12, 120, "ext", "notSelf"), C(me, 31821, 6, 120, "ext", "raid", "smashOnly"),
+		C("Stickboard", 64205, 6, 120, "ext", "raid"), C("Stickboard", hos, 12, 120, "ext", "notSelf"), C("Stickboard", 31821, 6, 120, "ext", "raid", "smashOnly"),
+		C("Illithris", 31821, 6, 120, "ext", "raid", "smashOnly"),
+		C("Halosylvan", 33206, 8, 144, "ext"),
+	}
+	local rows = CP.Generate({pool = pool, tanks = {"Onaqui", "Dracohouston"}, weaker = "Dracohouston"})
+	stop()
+	shownFor = mod
+	active = {rows = rows, test = true, classes = {Onaqui = "DEATHKNIGHT", Dracohouston = "PALADIN", [me] = "PALADIN",
+		Stickboard = "PALADIN", Illithris = "PALADIN", Halosylvan = "PRIEST"}}
+	pullTime = GetTime() + 8.5
+	wipe(done)
+	fight = {uses = {}, dead = {}, missed = {}}
+	ticker:Show()
+end
+
+function CP.ShowToMove(mod)
+	if active then return end -- they're up for the fight already
+	if (card and card:IsShown()) or (strip and strip:IsShown()) then
+		if card then card:Hide() end
+		if strip then strip:Hide() end
+		return
+	end
+	shownFor = mod
+	local other = "Other tank"
+	local rows = {
+		{time = 3, player = playerName, spell = "Your cooldown", dur = 12, target = playerName},
+		{time = 22, player = playerName, spell = "Your next one", dur = 10, target = playerName},
+		{time = 31, player = other, spell = "Their cooldown", dur = 12, target = other, note = "Tank swap"},
+	}
+	showCard(rows, nil, 0, true)
+	showStrip(rows, nil, 0, true)
+end
 
 DBM:RegisterCallback("DBM_TimerStart", function(_, _, _, _, _, timerType)
 	if timerType == "pull" and saved and saved.lastPlan then tellMine(saved.lastPlan) end
@@ -1351,7 +1736,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 		for cast, c in pairs(data) do
 			local name = GetSpellInfo(cast)
 			if name then
-				defaultByName[name], tracked[name], colorByName[name] = {c.dur, c.cd, c.power}, true, STRIP_COLORS[cast]
+				defaultByName[name], tracked[name], colorByName[name], shortByName[name] = {c.dur, c.cd, c.power}, true, STRIP_COLORS[cast], STRIP_SHORT[cast]
 				roleByName[name], raidByName[name], trinketByName[name], smashOnlyByName[name], notSelfByName[name] = c.role, c.raid, c.trinket, c.smashOnly, c.notSelf
 			end
 		end
@@ -1403,6 +1788,12 @@ events:SetScript("OnEvent", function(_, event, ...)
 		if active and not active.live and sub == "SPELL_CAST_SUCCESS" and sourceName == playerName and tracked[spell] then
 			local i = CP.Match(active.rows, {player = sourceName, spell = spell, time = GetTime() - pullTime})
 			if i then active.rows[i].done = true end
+		end
+		if active and sub == "SPELL_CAST_SUCCESS" and sourceName == playerName and active.taunts then
+			local now = GetTime() - pullTime
+			for _, r in ipairs(active.taunts) do
+				if not r.done and spell == r.cast and math.abs(now - r.time) <= MATCH then r.done = true break end
+			end
 		end
 		if active and spellId == 64412 and (sub == "SPELL_AURA_APPLIED" or sub == "SPELL_AURA_APPLIED_DOSE") then
 			-- Phase Punch is on whoever has the boss; its stacks say when they'll hand over
@@ -1562,11 +1953,15 @@ local function createEditor()
 end
 
 -- /dbm cd <boss>: edit that boss's plan (default the last one edited); /dbm cd mine: my cooldowns in the
--- last plan; /dbm cd off|on: stop or resume showing plans
+-- last plan; /dbm cd off|on: stop or resume showing plans; /dbm cd test: start or stop a mock fight
 function DBM:CooldownPlanCommand(arg)
 	arg = trim(arg or ""):lower()
 	if arg == "mine" then
 		if saved.lastPlan then tellMine(saved.lastPlan) end
+		return
+	end
+	if arg == "test" then -- temporary: the mock fight without going through Algalon's options
+		CP.TestFight(DBM:GetModByName("Algalon"))
 		return
 	end
 	editing = arg ~= "" and arg or saved.lastEdited or "algalon"
