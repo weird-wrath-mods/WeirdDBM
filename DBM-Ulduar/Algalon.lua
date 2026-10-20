@@ -104,15 +104,24 @@ local function raidMark(flags)
 end
 
 -- Safe range: a star that dies while the raid is phased in a Black Hole for Big Bang explodes on
--- nobody. Logs: raiders are phased by about T+6 (T = cast start) and released at T+9.0 to T+9.6;
--- the target is T+6.5..T+8.5, 0.5s inside that. Damage from here on is known exactly: Collapse ticks
--- on its schedule, and Curse of Doom hits 60s after it lands (logs: 59.9 to 60.0s, never a crit) for
--- a fixed amount, since a level 80 star has no partial resists (a geared lock: about 20k in our
--- logs). So the HP that dies inside the target is a range: Collapse alone, about 2 ticks wide, and
--- 20k wider once a Doom is out that lands inside the target (cast on the Doom moment, T+7.5-60).
+-- nobody. Logs (23 Big Bangs, T = cast start): Big Bang lands at T+7.98; the last raider is in by T+5.8
+-- typically but as late as T+7.8; the first is released at T+9.03 typically, T+8.83 at the earliest.
+-- The target is T+6.5..T+8.8. A Doom is aimed at T+8.0..T+8.8, after Big Bang has hit, when everyone
+-- alive is phased whatever the raid does. Damage from here on is known exactly: Collapse ticks
+-- on its schedule, and Curse of Doom hits 60s after it lands (logs: 59.9 to 60.0s, never a crit), with
+-- no partial resists on a level 80 star. Its amount isn't fixed: unresisted on Algalon our locks did
+-- 17.3k to 26.8k, with the +13% spell damage taken debuff a star won't carry, so 15.3k to 23.8k on a
+-- star; a lock with no raid buffs did 13.9k. DOOM_HP sits at the low end: a bigger Doom still kills when
+-- it lands, a smaller one leaves the star to Collapse ticks after the raid is released. So the HP that
+-- dies inside the target is a range: Collapse alone, about 2 ticks wide, and DOOM_HP wider once a Doom
+-- is out that lands inside the target (aimed at T+8.4).
 local HOLD_TO, BIG_BANG_EVERY = 9, 90.5
-local SAFE_FROM, SAFE_TO = 6.5, 8.5
-local DOOM_HP, DOOM_DELAY, DOOM_POP = 20000, 60, 7.5
+local SAFE_FROM, SAFE_TO = 6.5, 8.8
+local DOOM_HP, DOOM_DELAY = 14000, 60
+local DOOM_FROM, DOOM_POP = 8.0, 8.4 -- a Doom lands after Big Bang has hit; aimed at the middle
+-- How far DOOM NOW leads the window. A press made as the prompt appears reached the server about 0.75s
+-- later in our tests (reaction and latency), so leading by 0.3 lands it around T+8.45, mid-window
+local REACTION = 0.3
 local DOOM = {[603] = true, [30910] = true, [47867] = true} -- ranks 1-3
 local DOOM_ICON = select(3, GetSpellInfo(47867)) or "Interface\\Icons\\Spell_Shadow_AuraOfDarkness"
 local bigBangAt -- start of the Big Bang casting now, else the next one
@@ -132,8 +141,8 @@ local function targetBigBang(s, now)
 	if starMax - collapsed(s, bb + SAFE_FROM) > 0 then return bb end
 end
 
--- When a Doom that is out lands, if it is still to come. No Doom is assumed: the range is what the
--- damage really coming does, so it widens by DOOM_HP once a Doom landing inside the target is out.
+-- When a Doom that is out lands, if it is still to come: only to tell one cast off its moment, since
+-- the range always assumes a Doom landing on time
 local function doomLands(s, now)
 	return s.doomAt and s.doomAt > now and s.doomAt or nil
 end
@@ -149,10 +158,12 @@ local function safeRange(s, now, bb, lands)
 end
 
 -- The bar is one instruction: the HP fill in one colour and one word or number before the percent.
---   blue + number: HP still to take off (before a Doom: to the zone a Doom on the timer gives)
+--   blue + number: HP still to take off to the zone a Doom landing on time gives; the same number
+--   before and after the Doom is cast, so it can be worked to ahead of time
 --   purple, DOOM IN Xs / DOOM NOW: in that zone, waiting for the Doom moment
---   yellow STOP: Doomed (or no Doom needed) and it dies inside the target; leave it alone
+--   yellow STOP: Doomed and it dies inside the target; leave it alone
 --   red TOO LOW: it dies before the target, whatever happens now
+--   red DOOM EARLY / DOOM LATE: its Doom lands outside the target, so the number can't be trusted
 --   green, percent only: no Doom can land in time and it isn't Doomed, so there is nothing to aim
 --   for (those stars are killed on purpose, spread out)
 -- A Doomed star also gets the Doom icon after its name.
@@ -162,20 +173,27 @@ local function starStyle(s, h, c, text, doomed)
 	return h, s.icon, style
 end
 
+-- When to press for a Doom to land DOOM_FROM..SAFE_TO after Big Bang bb starts casting
+local function doomWindow(bb)
+	return bb + DOOM_FROM - DOOM_DELAY - REACTION, bb + SAFE_TO - DOOM_DELAY - REACTION
+end
+
 local function simpleBar(s, now, hp, h, bb)
 	local doomed = s.doomAt ~= nil
-	local doomAt = bb and bb + DOOM_POP - DOOM_DELAY -- the Doom moment
-	if not bb or (not doomed and now > doomAt + 1) then return starStyle(s, h, GREEN, nil, doomed) end
-	local low, high = safeRange(s, now, bb, doomLands(s, now))
+	if not bb then return starStyle(s, h, GREEN, nil, doomed) end
+	local pressFrom, pressTo = doomWindow(bb)
+	if not doomed and now > pressTo then return starStyle(s, h, GREEN, nil, doomed) end
+	-- one number whether or not the Doom is out yet: always worked out for a Doom landing on time. One
+	-- that lands outside the target is flagged rather than quietly changing the number
+	local lands = doomLands(s, now)
+	if lands and lands < bb + SAFE_FROM then return starStyle(s, h, RED, "|cffd93333" .. L.StarDoomEarly .. "|r", true) end
+	if lands and lands > bb + SAFE_TO then return starStyle(s, h, RED, "|cffd93333" .. L.StarDoomLate .. "|r", true) end
+	local low, high = safeRange(s, now, bb, bb + DOOM_POP)
 	if hp <= low then return starStyle(s, h, RED, "|cffd93333" .. L.StarTooLow .. "|r", doomed) end
-	if not doomed then
-		local top = high + DOOM_HP -- a Doom on the timer lands inside the target
-		if hp > top then return starStyle(s, h, BLUE, "|cff58d858" .. kHP(hp - top) .. "|r") end
-		local word = now < doomAt and L.StarDoomIn:format(math.ceil(doomAt - now)) or L.StarDoomNow
-		return starStyle(s, h, PURPLE, "|cffb070ff" .. word .. "|r")
-	end
-	if hp <= high then return starStyle(s, h, YELLOW, "|cfff2cc26" .. L.StarStop .. "|r", true) end
-	return starStyle(s, h, BLUE, "|cff58d858" .. kHP(hp - high) .. "|r", true)
+	if hp > high then return starStyle(s, h, BLUE, "|cff58d858" .. kHP(hp - high) .. "|r", doomed) end
+	if doomed then return starStyle(s, h, YELLOW, "|cfff2cc26" .. L.StarStop .. "|r", true) end
+	local word = now < pressFrom and L.StarDoomIn:format(pressFrom - now) or L.StarDoomNow
+	return starStyle(s, h, PURPLE, "|cffb070ff" .. word .. "|r")
 end
 
 -- Bar position, in % of max: smooth between hits and moved by exactly the damage of each hit, so
@@ -197,24 +215,24 @@ local function starBarValue(s)
 	return simpleBar(s, now, hp, h, targetBigBang(s, now))
 end
 
--- The Doom moment: casting then lands the Doom at T+7.5. A bar over the star bars counts down to it,
--- full until DOOM_BAR_SPAN before and empty at it, then NOW for the 1s a Doom still lands in time;
--- after that it counts to the next Big Bang's.
-local DOOM_BAR_SPAN = 38 -- Big Bang cast start to the next Doom moment
-local function doomMomentAfter(now)
+-- The press window for the next Big Bang. A bar over the star bars counts down to it, full until
+-- DOOM_BAR_SPAN before and empty at it, then NOW while a Doom still lands in time; after that it counts
+-- to the next Big Bang's.
+local DOOM_BAR_SPAN = BIG_BANG_EVERY + DOOM_FROM - DOOM_DELAY - REACTION -- Big Bang cast start to the next window
+local function doomPressAfter(now)
 	if not bigBangAt then return end
-	local m = bigBangAt + DOOM_POP - DOOM_DELAY
-	while now > m + 1 do m = m + BIG_BANG_EVERY end
-	return m
+	local bb = bigBangAt
+	while now > bb + SAFE_TO - DOOM_DELAY - REACTION do bb = bb + BIG_BANG_EVERY end
+	return doomWindow(bb)
 end
 
 local function doomBarValue()
 	local now = GetTime()
-	local m = doomMomentAfter(now)
-	if not m then return 100, nil, {segs = {seg(0, 100, PURPLE)}, valueText = ""} end -- intro: no Big Bang yet
-	if now >= m then return 100, nil, {segs = {seg(0, 100, PURPLE)}, valueText = "|cffb070ff" .. L.CastDoomsNow .. "|r"} end
-	local pct = math.min((m - now) / DOOM_BAR_SPAN, 1) * 100
-	return pct, nil, {segs = {seg(0, pct, PURPLE)}, valueText = math.ceil(m - now) .. "s"}
+	local from = doomPressAfter(now)
+	if not from then return 100, nil, {segs = {seg(0, 100, PURPLE)}, valueText = ""} end -- intro: no Big Bang yet
+	if now >= from then return 100, nil, {segs = {seg(0, 100, PURPLE)}, valueText = "|cffb070ff" .. L.CastDoomsNow .. "|r"} end
+	local pct = math.min((from - now) / DOOM_BAR_SPAN, 1) * 100
+	return pct, nil, {segs = {seg(0, pct, PURPLE)}, valueText = ("%.1fs"):format(from - now)}
 end
 
 -- A star takes the first free bar; with more than 4 known at once (a misjudged wave) it goes unshown
@@ -494,6 +512,7 @@ function mod:OnCombatStart(delay)
 	DBM.BossHealth:SetHeaderText(self.Options.DoomCountdown and "" or L.CollapsingStars)
 	DBM.BossHealth:SetBarSpacing(6) -- 4 stacked star bars: a bit under the default 8px gap
 	DBM.BossHealth:SetHeaderOffset(2) -- a little clear of the first bar
+	DBM.BossHealth:SetUpdateInterval(0.1) -- the Doom countdowns run to a tenth of a second
 	if self.Options.DoomCountdown then DBM.BossHealth:AddBoss(doomBarValue, L.CastDooms) end
 	for i = 1, STAR_COUNT do
 		local row = {index = i}

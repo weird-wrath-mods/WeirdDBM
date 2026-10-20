@@ -361,6 +361,13 @@ function bossHealth:SetBarSpacing(gap)
 	barOverlap = TEMPLATE_GAP - gap
 end
 
+-- Redraw period in seconds (default 0.5), until the frame is hidden. Call after Show.
+function bossHealth:SetUpdateInterval(sec)
+	if not bossHealth.ticker then return end
+	AceTimer:CancelTimer(bossHealth.ticker)
+	bossHealth.ticker = AceTimer:ScheduleRepeatingTimer(function() updateFrame(bossHealth) end, sec)
+end
+
 -- Moves the header text up (positive) or down from its default spot. Call after Show.
 function bossHealth:SetHeaderOffset(y)
 	if header then header:SetPoint("BOTTOM", anchor, "BOTTOM", 0, y) end

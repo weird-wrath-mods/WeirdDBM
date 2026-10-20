@@ -162,8 +162,10 @@ L:SetMiscLocalization({
 	StarBar4				= "Four",
 	StarTooLow				= "TOO LOW",
 	StarStop				= "STOP",
-	StarDoomIn				= "DOOM IN %ds",
+	StarDoomIn				= "DOOM IN %.1fs",
 	StarDoomNow				= "DOOM NOW",
+	StarDoomEarly			= "DOOM EARLY",
+	StarDoomLate			= "DOOM LATE",
 	CastDooms				= "Cast Dooms",
 	CastDoomsNow			= "NOW",
 	PullCheck				= "Time until Algalon transmits distress signal= (%d+) min."
