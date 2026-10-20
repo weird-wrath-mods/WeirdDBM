@@ -242,21 +242,23 @@ local GAP_OK = 1	-- a hole this short before a planned cooldown isn't worth spen
 -- opts.used: [pool index] = fight times it was already used (so it isn't planned again too soon);
 -- opts.swaps: expected swap times (default CP.SwapTimes); opts.stop (default FIGHT).
 -- In order: each tank's big cooldown at the pull and at each swap-in; raid-wide cooldowns on Cosmic
--- Smash; the rest of each tank's time filled, the tank's own before shared ones, unused longest first
--- (trinkets only when nothing else is up); then trinkets on top of their owner's weakest cooldowns.
--- Built twice, once keeping trinkets for pairing and once letting them cover alone; the one with less
--- uncovered time wins. Returns rows, problems.
-local function build(opts, trinketsCover, rng)
+-- Smash; the rest of each tank's time filled with real cooldowns, the tank's own before shared ones, unused
+-- longest first; then trinkets, too weak to count as cover, into their owner's holes and next to their owner's
+-- weakest cooldowns. Returns rows, problems, score.
+local function build(opts, rng)
 	local from, stop = opts.from or 0, opts.stop or FIGHT
 	local swaps = opts.swaps or CP.SwapTimes(from, stop)
 	local tanks, tank = opts.tanks, opts.tank or 1
 	local covered = opts.covered or {}
 	local pool = opts.pool
-	local rows, problems, uncovered = {}, {}, 0
+	local rows, problems, uncovered, holes = {}, {}, 0, {}
 	local bigMissed, smashMissed = 0, 0
 	local uses = {}	-- [i] = fight times planned or used
-	local trinketByPool = {}
-	for _, c in ipairs(pool) do if c.trinket then trinketByPool[c.player .. "\0" .. c.spell] = true end end
+	local trinketByPool, bigByPool = {}, {}
+	for _, c in ipairs(pool) do
+		if c.trinket then trinketByPool[c.player .. "\0" .. c.spell] = true end
+		if c.role == "big" then bigByPool[c.player .. "\0" .. c.spell] = true end
+	end
 	for i in ipairs(pool) do
 		uses[i] = {}
 		for _, t in ipairs(opts.used and opts.used[i] or {}) do uses[i][#uses[i] + 1] = t end
@@ -342,8 +344,8 @@ local function build(opts, trinketsCover, rng)
 			if pick then use(pick, press, who, s > 1 and "Tank swap" or nil) end
 		end
 	end
-	-- 2: raid-wide cooldowns on Cosmic Smash, whichever has waited longest; ones that also cover the tank
-	-- (Divine Guardian) first, fire-only ones (Aura Mastery) where none of those is free
+	-- 2: raid-wide cooldowns on Cosmic Smash, whichever has waited longest; fire-only ones (Aura Mastery) first,
+	-- since they do nothing for the tank, and Divine Guardian (which also covers the tank) only where none is free
 	for _, hit in ipairs(CP.SmashTimes(from + RAID_LEAD_MIN, stop)) do
 		local latest, pick = hit - RAID_LEAD_MIN
 		for _, k in ipairs(keptRaid) do
@@ -353,7 +355,7 @@ local function build(opts, trinketsCover, rng)
 		for i, c in ipairs(pool) do
 			if c.raid and free(i, latest) then
 				local k = rng and rng() or nextFree(i, 0) or 0 -- a variation tries them in any order
-				if not pick or (pool[pick].smashOnly and not c.smashOnly) or (not c.smashOnly == not pool[pick].smashOnly and k < pickKey) then
+				if not pick or (not pool[pick].smashOnly and c.smashOnly) or (not c.smashOnly == not pool[pick].smashOnly and k < pickKey) then
 					pick, pickKey = i, k
 				end
 			end
@@ -393,14 +395,14 @@ local function build(opts, trinketsCover, rng)
 				local overlap = swapAt and c >= swapAt -- past the swap only the outgoing tank's own cooldowns
 				local pick, pickIdle, pickRank, soonest
 				for i, cd in ipairs(pool) do
-					if cd.role ~= "big" and not cd.smashOnly and usable(cd, who) and not (overlap and (cd.player ~= who or (cd.trinket and not trinketsCover))) then
+					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) and not (overlap and cd.player ~= who) then
 						if free(i, c) then
 							local last = -math.huge
 							for _, u in ipairs(uses[i]) do if u < c and u > last then last = u end end
 							local idle = rng and rng() or c - last -- a variation tries them in any order
-							-- raid-wide ones are kept for smashes and trinkets for pairing, unless nothing else is up;
-							-- then the tank's own before shared ones, which the other tank could have used
-							local rank = (cd.raid or (cd.trinket and not trinketsCover)) and 2 or cd.role == "ext" and 1 or 0
+							-- raid-wide ones are kept for smashes unless nothing else is up; then the tank's own before
+							-- shared ones, which the other tank could have used
+							local rank = cd.raid and 2 or cd.role == "ext" and 1 or 0
 							if rng and rng() < 0.3 then rank = 0 end -- a variation sometimes spends what it'd normally save
 							if not pick or rank < pickRank or (rank == pickRank
 								and (idle > pickIdle or (idle == pickIdle and cd.dur > pool[pick].dur))) then
@@ -419,19 +421,45 @@ local function build(opts, trinketsCover, rng)
 					break
 				else
 					local til = math.min(soonest or segEnd, nextFixed or segEnd, swapAt or segEnd)
-					problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(who, round(c), round(til))
-					uncovered = uncovered + til - c
+					holes[#holes + 1] = {who, c, til}
 					c = til
 				end
 			end
 		end
 	end
-	-- 4: trinkets (weak, ~10%) go up with their owner's weakest cooldowns
+	-- 4: trinkets (weak, ~10%) aren't cover on their own: first into their owner's holes, longest first, since
+	-- something beats nothing, then up with their owner's weakest cooldowns
+	table.sort(holes, function(a, b) return a[3] - a[2] > b[3] - b[2] end)
+	for i, c in ipairs(pool) do
+		if c.trinket then
+			for _, h in ipairs(holes) do
+				if h[1] == c.player and free(i, h[2]) then use(i, h[2], c.player) end
+			end
+		end
+	end
+	local trinketOnly = 0
+	table.sort(holes, function(a, b) return a[2] < b[2] end)
+	for _, h in ipairs(holes) do
+		local c = h[2]
+		for _, r in ipairs(rows) do -- what a trinket covers of the hole
+			if r.target == h[1] and trinketByPool[r.player .. "\0" .. r.spell] and r.time <= c and r.time + r.dur > c then
+				local to = math.min(h[3], r.time + r.dur)
+				trinketOnly = trinketOnly + to - c
+				c = to
+			end
+		end
+		if c < h[3] then
+			problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(h[3]))
+			uncovered = uncovered + h[3] - c
+		end
+	end
 	for i, c in ipairs(pool) do
 		if c.trinket then
 			local windows = {}
 			for _, r in ipairs(rows) do
-				if r.target == c.player and r.player .. r.spell ~= c.player .. c.spell and r.time >= from then windows[#windows + 1] = r end
+				if r.target == c.player and r.player .. r.spell ~= c.player .. c.spell and r.time >= from and not bigByPool[r.player .. "\0" .. r.spell] then
+					windows[#windows + 1] = r -- a big cooldown needs no support
+				end
 			end
 			table.sort(windows, function(a, b)
 				if (a.power or 0) ~= (b.power or 0) then return (a.power or 0) < (b.power or 0) end
@@ -443,12 +471,9 @@ local function build(opts, trinketsCover, rng)
 		end
 	end
 	table.sort(rows, function(a, b) return a.time < b.time end)
-	local soloTrinkets = 0
-	for _, r in ipairs(rows) do
-		if r.time >= from and trinketByPool[r.player .. "\0" .. r.spell] and not (r.note or ""):match("^with ") then soloTrinkets = soloTrinkets + 1 end
-	end
-	-- worst first: a swap without its big cooldown, uncovered tank time, a smash without a raid cooldown, a trinket alone
-	return rows, problems, {bigMissed, round(uncovered), smashMissed, soloTrinkets}
+	-- worst first: a swap without its big cooldown, tank time with nothing up, tank time with only a trinket,
+	-- a smash without a raid cooldown
+	return rows, problems, {bigMissed, round(uncovered), round(trinketOnly), smashMissed}
 end
 
 local TRIES = 40	-- variations tried on top of the plain build, keeping the best
@@ -459,8 +484,8 @@ local function better(a, b)
 	return false
 end
 
--- The plain build and TRIES variations of it, each with trinkets kept for pairing and with them allowed to
--- cover alone; the best by build's score wins, the plainest of equals. Seeded, so a roster always gives the same plan.
+-- The plain build and TRIES variations of it; the best by build's score wins, the plainest of equals.
+-- Seeded, so a roster always gives the same plan.
 function CP.Generate(opts, tries)
 	local seed = 12345
 	local function rng()
@@ -469,10 +494,8 @@ function CP.Generate(opts, tries)
 	end
 	local best, bestProblems, bestScore
 	for try = 0, tries or TRIES do
-		for _, trinketsCover in ipairs({false, true}) do
-			local rows, problems, score = build(opts, trinketsCover, try > 0 and rng or nil)
-			if not best or better(score, bestScore) then best, bestProblems, bestScore = rows, problems, score end
-		end
+		local rows, problems, score = build(opts, try > 0 and rng or nil)
+		if not best or better(score, bestScore) then best, bestProblems, bestScore = rows, problems, score end
 	end
 	return best, bestProblems, bestScore
 end
