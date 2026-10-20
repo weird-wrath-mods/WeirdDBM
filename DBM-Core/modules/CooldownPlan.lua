@@ -641,21 +641,14 @@ function CP.NotReady(player, spell, due)
 end
 
 -- player's side of the plan at fight time t: the next use (next, nextIn) and the one after it (later, laterIn),
--- skipping any already cast (a raid cooldown is fire and forget: the card moves on the moment it's pressed),
--- and what the plan has up on tank
--- right now (cover = {{row = r, left = s}}). go: a use of mine that's due and not cast yet, until MATCH
--- seconds late, when it counts as missed
-function CP.Card(rows, period, player, t, tank)
-	local card = {cover = {}}
+-- skipping any already cast (a raid cooldown is fire and forget: the card moves on the moment it's pressed).
+-- go: a use of mine that's due and not cast yet, until MATCH seconds late, when it counts as missed
+function CP.Card(rows, period, player, t)
+	local card = {}
 	for _, r in ipairs(rows) do
 		if r.player == player and not r.done and not card.go then
 			local due = CP.NextUse(r, period, t - MATCH)
 			if due <= t and due >= t - MATCH then card.go = r end
-		end
-		if tank and r.target == tank then
-			local due = CP.NextUse(r, period, t)
-			local left = due + (r.dur or CP.Info(r.player, r.spell) or 0) - t
-			if due <= t and left > 0 then card.cover[#card.cover + 1] = {row = r, left = left} end
 		end
 		if r.player == player and not r.done then
 			local due = CP.NextUse(r, period, t)
@@ -971,7 +964,7 @@ ticker:SetScript("OnUpdate", function(_, e)
 			replanSoon()
 		end
 	end
-	showCard(active.rows, active.period, t, false, fight.holder or CP.Holder(active.rows, t))
+	showCard(active.rows, active.period, t)
 	showStrip(active.rows, active.period, t, planTanks(active.rows) ~= nil)
 end)
 
@@ -1076,17 +1069,25 @@ local function reason(r)
 	return (r.target and r.target ~= playerName and (" on " .. r.target) or "") .. why
 end
 
--- personal card: what's on the tank now, my next use, and what I can't spend because the plan needs it;
--- right-click hides it
-function showCard(rows, period, t, prepull, tank)
-	local c = CP.Card(rows, period, playerName, t, tank)
+-- what a use needs said on the card: the aura for Aura Mastery, the target for an external, else nothing
+local function sub(r)
+	if smashOnlyByName[r.spell] then return "Fire Res" end
+	if roleByName[r.spell] == "ext" and not raidByName[r.spell] and r.target and r.target ~= playerName then return "on " .. r.target end
+	return ""
+end
+local function countdown(left) return left < 60 and tostring(math.ceil(left)) or clock(left) end
+
+-- personal card: a big countdown to my next press with the spell beside it, and the press after that on one
+-- line; right-click hides it
+function showCard(rows, period, t, prepull)
+	local c = CP.Card(rows, period, playerName, t)
 	if not c.go and not c.next then
 		if card then card:Hide() end
 		return
 	end
 	if not card then
 		card = CreateFrame("Frame", "DBMCooldownPlanCard", UIParent)
-		card:SetWidth(300)
+		card:SetWidth(210) -- fixed: room for a long spell name beside the countdown and "Hand of Sacrifice on Dracohouston"
 		card:SetBackdrop({
 			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 			tile = true, tileSize = 16, edgeSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
@@ -1104,49 +1105,65 @@ function showCard(rows, period, t, prepull, tank)
 		card:SetScript("OnMouseUp", function(self, button) if button == "RightButton" then self:Hide() end end)
 		local pos = saved.cardPos
 		if pos then card:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else card:SetPoint("CENTER", 320, -160) end
-		card.tank = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-		card.tank:SetPoint("TOPLEFT", 10, -10)
-		card.head = card:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-		card.head:SetPoint("TOPLEFT", card.tank, "BOTTOMLEFT", 0, -6)
-		card.why = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-		card.why:SetPoint("TOPLEFT", card.head, "BOTTOMLEFT", 0, -3)
-		card.after = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-		card.after:SetPoint("TOPLEFT", card.why, "BOTTOMLEFT", 0, -6)
-		for _, fs in ipairs({card.tank, card.head, card.why, card.after}) do
-			fs:SetWidth(280)
-			fs:SetJustifyH("LEFT")
-		end
+		card.num = card:CreateFontString(nil, "ARTWORK", "NumberFontNormalHuge")
+		card.num:SetWidth(54)
+		card.num:SetJustifyH("CENTER")
+		-- two matching rows, times in the left column and spells beside them; no widths, so nothing wraps:
+		-- the longest pieces measured in Friz (Icebound Fortitude at 14 is 124px of the 130 beside the countdown)
+		local friz = STANDARD_TEXT_FONT
+		card.spell = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
+		card.spell:SetFont(friz, 14)
+		card.spell:SetPoint("TOPLEFT", card.num, "TOPRIGHT", 6, -2)
+		card.sub = card:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+		card.sub:SetFont(friz, 12)
+		card.sub:SetTextColor(0.63, 0.63, 0.63)
+		card.sub:SetPoint("TOPLEFT", card.spell, "BOTTOMLEFT", 0, -1)
+		card.rule = card:CreateTexture(nil, "ARTWORK")
+		card.rule:SetTexture(1, 1, 1, 0.15)
+		card.rule:SetHeight(1)
+		card.afterTime = card:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+		card.afterTime:SetFont(friz, 13)
+		card.afterTime:SetTextColor(0.69, 0.69, 0.69)
+		card.afterTime:SetWidth(54)
+		card.afterTime:SetJustifyH("CENTER")
+		card.afterTime:SetPoint("TOPLEFT", card.rule, "BOTTOMLEFT", -4, -5)
+		card.after = card:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+		card.after:SetFont(friz, 13)
+		card.after:SetTextColor(0.69, 0.69, 0.69)
+		card.after:SetPoint("TOPLEFT", card.afterTime, "TOPRIGHT", 6, 0)
 	end
-	local showTank = not prepull and tank
-	if not showTank then
-		card.tank:SetText("")
-	elseif #c.cover == 0 then
-		card.tank:SetFormattedText("%s: |cff999999nothing up|r", tank) -- grey: red would push people into the wrong cooldown
-	else
-		local on = {}
-		for _, u in ipairs(c.cover) do
-			on[#on + 1] = ("%s %ds%s"):format(u.row.spell, math.ceil(u.left), u.row.player ~= tank and (" (" .. u.row.player .. ")") or "")
-		end
-		card.tank:SetFormattedText("%s: |cff40ff40%s|r", tank, table.concat(on, " + "))
-	end
+	card.num:ClearAllPoints()
+	card.num:SetPoint("TOPLEFT", 6, -10)
 	local r = c.go or c.next
+	local font = card.num:GetFont()
+	card.num:SetFont(font, c.go and not prepull and 20 or 30, "OUTLINE") -- "NOW" is 73px at 30, too wide for the column
 	if c.go and not prepull then
-		card.head:SetFormattedText("|cffff3030NOW:|r %s", r.spell)
+		card.num:SetText("NOW")
+		card.num:SetTextColor(1, 0.19, 0.19)
 	elseif prepull then
-		card.head:SetFormattedText("%s at %s", r.spell, clock(r.time))
+		card.num:SetText(clock(r.time))
+		card.num:SetTextColor(0.75, 0.75, 0.75)
 	else
-		card.head:SetFormattedText("%s in %s", r.spell, c.nextIn < 60 and ("%ds"):format(math.ceil(c.nextIn)) or clock(c.nextIn))
+		card.num:SetText(countdown(c.nextIn))
+		if c.nextIn <= 10 then card.num:SetTextColor(1, 0.82, 0) else card.num:SetTextColor(0.75, 0.75, 0.75) end
 	end
-	card.why:SetText((reason(r):gsub("^ ", "")))
-	-- the cooldown after that: the next one when the big line is NOW, else the one after the next
+	card.spell:SetText(r.spell)
+	card.sub:SetText(sub(r))
+	-- the press after that: the next one when the big line is NOW, else the one after the next
 	local after, afterIn = c.go and c.next or c.later, c.go and c.nextIn or c.laterIn
-	if after then
-		local when = prepull and ("at " .. clock(after.time)) or ("in " .. (afterIn < 60 and ("%ds"):format(math.ceil(afterIn)) or clock(afterIn)))
-		card.after:SetFormattedText("|cff999999then|r %s %s%s", after.spell, when, reason(after))
+	card.rule:ClearAllPoints()
+	card.rule:SetPoint("TOPLEFT", card.num, "BOTTOMLEFT", 4, -6)
+	card.rule:SetPoint("RIGHT", -10, 0)
+	if after then -- time and spell only: the target shows once it moves up to the big row
+		card.afterTime:SetText(prepull and clock(after.time) or countdown(afterIn))
+		card.after:SetText(after.spell)
+		card.rule:Show()
 	else
+		card.afterTime:SetText("")
 		card.after:SetText("")
+		card.rule:Hide()
 	end
-	card:SetHeight(26 + (showTank and card.tank:GetHeight() + 6 or 0) + card.head:GetHeight() + card.why:GetHeight() + (after and card.after:GetHeight() + 6 or 0))
+	card:SetHeight(10 + card.num:GetHeight() + (after and 6 + 1 + 5 + card.after:GetHeight() or 0) + 12)
 	card:Show()
 end
 
