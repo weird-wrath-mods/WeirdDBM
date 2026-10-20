@@ -41,7 +41,7 @@ private.cooldownData = {
 		{field = "power", flat = 5, talent = 63410, rank = 1}, -- Improved Barkskin
 		{field = "power", flat = 10, talent = 63410, rank = 2}, -- Improved Barkskin
 	}},
-	[6940] = {buff = 6940, dur = 12, cd = 120, power = 30, role = "ext", class = "PALADIN", notSelf = true, mods = { -- Hand of Sacrifice
+	[6940] = {buff = 6940, dur = 12, cd = 120, power = 30, role = "ext", class = "PALADIN", notSelf = true, notInTreeOf = 35395, mods = { -- Hand of Sacrifice
 		{field = "power", flat = 5, talent = 53660, rank = 1}, -- Blessed Hands
 		{field = "power", flat = 10, talent = 53660, rank = 2}, -- Blessed Hands
 	}},

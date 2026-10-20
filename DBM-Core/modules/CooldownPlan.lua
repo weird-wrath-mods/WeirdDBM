@@ -17,12 +17,14 @@ local CHECKAHEAD = 5	-- seconds before a use that its readiness is checked
 local defaultByName, roleByName, raidByName, trinketByName, smashOnlyByName, notSelfByName = {}, {}, {}, {}, {}, {}	-- by localized cast name, filled at load
 
 -- [cast spell] = {dur, cd, power} for what this player has, given has.knows(cast), has.talent(first rank
--- spell) -> rank, has.glyph(spell), has.pieces(items) -> equipped count and has.defense(). Flat mods add,
+-- spell) -> rank, has.glyph(spell), has.pieces(items) -> equipped count, has.defense() and
+-- has.mainTreeHas(talent spell): is that talent in the tree with most points. Flat mods add,
 -- percent mods then scale, the order the server applies spell mods in. power is % damage reduction.
 function CP.Compute(has)
 	local out = {}
 	for cast, c in pairs(data) do
-		if has.knows(cast) and (not c.needs or has.talent(c.needs) > 0) and (not c.needsGlyph or has.glyph(c.needsGlyph)) then
+		if has.knows(cast) and (not c.needs or has.talent(c.needs) > 0) and (not c.needsGlyph or has.glyph(c.needsGlyph))
+			and not (c.notInTreeOf and has.mainTreeHas and has.mainTreeHas(c.notInTreeOf)) then
 			local flat, pct = {dur = 0, cd = 0, power = 0}, {dur = 0, cd = 0, power = 0}
 			for _, m in ipairs(c.mods) do
 				local on
@@ -638,47 +640,69 @@ function CP.Holder(rows, t)
 	return who
 end
 
--- The timeline strip from fight time t for span seconds: a lane per tank with what's planned on them and
--- the holes while they have the boss, a raid lane with raid-wide cooldowns, Cosmic Smash impacts and swaps.
--- {lanes = {{name, blocks = {{from, to, row}}, gaps = {{from, to}}}, ..., {name = "Raid", blocks}}, smashes, swaps}
-function CP.Strip(rows, period, t, span, tanks, isRaid)
+-- The timeline strip from fight time t for span seconds: one tank lane showing whoever has the boss (the
+-- incoming tank's cover from their press, the outgoing tank's cut off there), a tag naming the tank at each
+-- handover, the holes while the tank on the boss has nothing up, a raid lane with raid-wide cooldowns,
+-- Cosmic Smash impacts and swaps (taunts).
+-- {lanes = {{name = "Tank", blocks = {{from, to, row}}, gaps = {{from, to}}, tags = {{time, name}}}, {name = "Raid", blocks}},
+--  smashes, swaps}
+function CP.Strip(rows, period, t, span, isRaid)
 	local stop = t + span
-	local lanes, byName = {}, {}
-	for i, name in ipairs(tanks) do
-		lanes[i] = {name = name, blocks = {}, gaps = {}}
-		byName[name] = lanes[i]
-	end
-	local raid = {name = "Raid", blocks = {}}
-	lanes[#lanes + 1] = raid
-	local strip = {lanes = lanes, smashes = CP.SmashTimes(t, stop), swaps = {}}
+	local tank, raid = {name = "Tank", blocks = {}, gaps = {}, tags = {}}, {name = "Raid", blocks = {}}
+	local strip = {lanes = {tank, raid}, smashes = CP.SmashTimes(t, stop), swaps = {}}
+	local uses = {}	-- every use in view, by target
+	local taunts = {}
 	for _, r in ipairs(rows) do
 		local dur = r.dur or CP.Info(r.player, r.spell) or 0
 		local due = CP.NextUse(r, period, t - dur)
 		while due < stop and due + dur > t do
-			local b = {from = math.max(due, t), to = math.min(due + dur, stop), row = r}
-			if byName[r.target] then table.insert(byName[r.target].blocks, b) end
-			if isRaid(r.spell) then table.insert(raid.blocks, b) end
-			if r.note == "Tank swap" and due + SWAP_LEAD >= t then table.insert(strip.swaps, due + SWAP_LEAD) end
+			if r.target then
+				uses[r.target] = uses[r.target] or {}
+				table.insert(uses[r.target], {from = due, to = due + dur, row = r})
+			end
+			if isRaid(r.spell) then table.insert(raid.blocks, {from = math.max(due, t), to = math.min(due + dur, stop), row = r}) end
+			if r.note == "Tank swap" then taunts[#taunts + 1] = due + SWAP_LEAD end
 			if not period then break end
 			due = due + period
 		end
 	end
-	-- holes: the boss's tank with nothing on them
+	table.sort(taunts)
+	-- who has the boss when: from t, then from each taunt in view
 	local edges = {t}
-	for _, s in ipairs(strip.swaps) do edges[#edges + 1] = s end
-	table.sort(edges)
+	for _, w in ipairs(taunts) do
+		if w > t and w < stop then edges[#edges + 1] = w strip.swaps[#strip.swaps + 1] = w end
+	end
 	edges[#edges + 1] = stop
 	for i = 1, #edges - 1 do
-		local lane = byName[CP.Holder(rows, edges[i])]
-		if lane then
-			table.sort(lane.blocks, function(a, b) return a.from < b.from end)
-			local c = edges[i]
-			for _, b in ipairs(lane.blocks) do
-				if b.from > c and c < edges[i + 1] then table.insert(lane.gaps, {from = c, to = math.min(b.from, edges[i + 1])}) end
-				c = math.max(c, b.to)
+		local a, b = edges[i], edges[i + 1]
+		local who = CP.Holder(rows, a)
+		tank.tags[#tank.tags + 1] = {time = a, name = who}
+		local mine = uses[who] or {}
+		table.sort(mine, function(x, y) return x.from < y.from end)
+		-- the next tank's lane starts at their first press before the taunt
+		local nextStart = b
+		if i < #edges - 1 then
+			for _, u in ipairs(uses[CP.Holder(rows, b)] or {}) do
+				if u.from < b and u.to > b and u.from >= b - SWAP_LEAD - 0.01 then nextStart = math.min(nextStart, u.from) end
 			end
-			if c < edges[i + 1] then table.insert(lane.gaps, {from = c, to = edges[i + 1]}) end
 		end
+		local laneFrom = a
+		if i > 1 then
+			for _, u in ipairs(mine) do
+				if u.from < a and u.to > a and u.from >= a - SWAP_LEAD - 0.01 then laneFrom = math.min(laneFrom, u.from) end
+			end
+		end
+		for _, u in ipairs(mine) do
+			local from, to = math.max(u.from, laneFrom, t), math.min(u.to, nextStart, stop)
+			if to > from then tank.blocks[#tank.blocks + 1] = {from = from, to = to, row = u.row} end
+		end
+		-- holes: the tank on the boss with nothing up
+		local c = a
+		for _, u in ipairs(mine) do
+			if u.from > c and c < b then tank.gaps[#tank.gaps + 1] = {from = c, to = math.min(u.from, b)} end
+			c = math.max(c, u.to)
+		end
+		if c < b then tank.gaps[#tank.gaps + 1] = {from = c, to = b} end
 	end
 	return strip
 end
@@ -718,11 +742,18 @@ end
 -- my cooldowns from talents, glyphs and gear; [name] = true for the ones CooldownData knows
 local computed = {}
 local function computeMine()
-	local talentRank = {}
+	local talentRank, mainTab, mainPoints, inMain = {}, nil, -1, {}
+	for tab = 1, GetNumTalentTabs() do
+		local _, _, points = GetTalentTabInfo(tab)
+		if (points or 0) > mainPoints then mainTab, mainPoints = tab, points or 0 end
+	end
 	for tab = 1, GetNumTalentTabs() do
 		for i = 1, GetNumTalents(tab) do
 			local name, _, _, _, rank = GetTalentInfo(tab, i)
-			if name then talentRank[name] = rank end
+			if name then
+				talentRank[name] = rank
+				if tab == mainTab then inMain[name] = true end
+			end
 		end
 	end
 	local glyphs = {}
@@ -743,6 +774,7 @@ local function computeMine()
 			return name and GetSpellInfo(name) ~= nil
 		end,
 		talent = function(spell) return talentRank[GetSpellInfo(spell)] or 0 end,
+		mainTreeHas = function(spell) return inMain[GetSpellInfo(spell)] end,
 		glyph = function(spell) return glyphs[GetSpellInfo(spell)] end,
 		pieces = function(items)
 			local n = 0
@@ -887,7 +919,7 @@ ticker:SetScript("OnUpdate", function(_, e)
 		end
 	end
 	showCard(active.rows, active.period, t, false, fight.holder or CP.Holder(active.rows, t))
-	showStrip(active.rows, active.period, t, planTanks(active.rows))
+	showStrip(active.rows, active.period, t, planTanks(active.rows) ~= nil)
 end)
 
 function stop()
@@ -1063,7 +1095,28 @@ function showCard(rows, period, t, prepull, tank)
 end
 
 -- timeline strip: the next STRIP_SPAN seconds of the plan, on until /dbm cd strip turns it off
-local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H = 40, 420, 90, 18
+local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H = 40, 420, 90, 18, 12
+local LANES_TOP = 20 + TAG_H	-- smash labels, then the tank tags, then the lanes
+-- one colour per cooldown, by cast spell; no yellows (the swap marks) or gold (the outline on my own uses)
+local STRIP_COLORS = {
+	[48792] = {0.18, 0.44, 0.71}, -- Icebound Fortitude
+	[498] = {0.66, 0.20, 0.62},   -- Divine Protection
+	[871] = {0.49, 0.60, 0.16},   -- Shield Wall
+	[61336] = {0.63, 0.32, 0.18}, -- Survival Instincts
+	[55233] = {0.69, 0.23, 0.18}, -- Vampiric Blood
+	[51271] = {0.29, 0.25, 0.71}, -- Unbreakable Armor
+	[12975] = {0.54, 0.43, 0.23}, -- Last Stand
+	[22812] = {0.18, 0.55, 0.34}, -- Barkskin
+	[6940] = {0.76, 0.33, 0.50},  -- Hand of Sacrifice
+	[1038] = {0.24, 0.60, 0.24},  -- Hand of Salvation
+	[64205] = {0.11, 0.54, 0.54}, -- Divine Sacrifice
+	[48788] = {0.69, 0.49, 0.38}, -- Lay on Hands
+	[33206] = {0.79, 0.44, 0.12}, -- Pain Suppression
+	[47788] = {0.23, 0.56, 0.79}, -- Guardian Spirit
+	[31821] = {0.49, 0.25, 0.71}, -- Aura Mastery
+	[64763] = {0.42, 0.42, 0.42}, -- Heart of Iron
+}
+local colorByName = {}
 local function stripPart(list, kind)
 	list.used = list.used + 1
 	local p = list[list.used]
@@ -1072,8 +1125,7 @@ local function stripPart(list, kind)
 			p = strip:CreateTexture(nil, "OVERLAY")
 		else
 			p = CreateFrame("Frame", nil, strip)
-			p.bg = p:CreateTexture(nil, "ARTWORK")
-			p.bg:SetAllPoints()
+			p:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2})
 			p.text = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 			p.text:SetPoint("LEFT", 3, 0)
 			p.text:SetPoint("RIGHT", -2, 0)
@@ -1084,14 +1136,14 @@ local function stripPart(list, kind)
 	p:Show()
 	return p
 end
-function showStrip(rows, period, t, tanks)
-	if not DBM.Options.CooldownPlanStrip or not tanks then
+function showStrip(rows, period, t, hasTanks)
+	if not DBM.Options.CooldownPlanStrip or not hasTanks then
 		if strip then strip:Hide() end
 		return
 	end
 	if not strip then
 		strip = CreateFrame("Frame", "DBMCooldownPlanStrip", UIParent)
-		strip:SetSize(LABEL_W + STRIP_W + 16, 3 * LANE_H + 48) -- smash labels above the lanes, swap labels below
+		strip:SetSize(LABEL_W + STRIP_W + 16, 2 * LANE_H + TAG_H + 52) -- smash labels above, tank tags, two lanes, swap labels below
 		strip:SetBackdrop({
 			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 			tile = true, tileSize = 16, edgeSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
@@ -1109,58 +1161,71 @@ function showStrip(rows, period, t, tanks)
 		local pos = saved.stripPos
 		if pos then strip:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else strip:SetPoint("TOP", 0, -120) end
 		strip.names, strip.blocks, strip.lines, strip.marks = {}, {used = 0}, {used = 0}, {used = 0}
-		for i = 1, 3 do
+		for i = 1, 2 do
 			strip.names[i] = strip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-			strip.names[i]:SetPoint("TOPLEFT", 10, -24 - (i - 1) * LANE_H - 3)
+			strip.names[i]:SetPoint("TOPLEFT", 10, -LANES_TOP - (i - 1) * LANE_H - 3)
 		end
 	end
-	local s = CP.Strip(rows, period, t, STRIP_SPAN, tanks, function(spell) return raidByName[spell] end)
+	local s = CP.Strip(rows, period, t, STRIP_SPAN, function(spell) return raidByName[spell] end)
 	for _, list in ipairs({strip.blocks, strip.lines, strip.marks}) do
 		for i = 1, list.used do list[i]:Hide() end
 		list.used = 0
 	end
 	local x0 = LABEL_W + 8
 	local function x(time) return x0 + (time - t) / STRIP_SPAN * STRIP_W end
-	local function block(lane, from, to, r, g, b, a, text)
+	local function block(lane, from, to, color, a, text, mine)
 		local p = stripPart(strip.blocks)
 		p:ClearAllPoints()
-		p:SetPoint("TOPLEFT", x(from), -24 - (lane - 1) * LANE_H - 1)
+		p:SetPoint("TOPLEFT", x(from), -LANES_TOP - (lane - 1) * LANE_H - 1)
 		p:SetSize(math.max(1, x(to) - x(from)), LANE_H - 2)
-		p.bg:SetTexture(r, g, b, a)
+		p:SetBackdropColor(color[1], color[2], color[3], a)
+		p:SetBackdropBorderColor(1, 0.82, 0, mine and 1 or 0)
 		p.text:SetText(text or "")
+		p.text:SetTextColor(1, 1, 1)
 	end
-	local function line(time, r, g, b, label, below)
+	local function label(anchor, point, relPoint, dx, w, text, r, g, b)
+		local m = stripPart(strip.marks)
+		m:ClearAllPoints()
+		m:SetPoint(point, anchor, relPoint, dx, 0)
+		m:SetSize(w, 12)
+		m:SetBackdropColor(0, 0, 0, 0)
+		m:SetBackdropBorderColor(0, 0, 0, 0)
+		m.text:SetText(text)
+		m.text:SetTextColor(r, g, b)
+		return m
+	end
+	local function line(time, r, g, b, text, below)
 		local l = stripPart(strip.lines, "line")
 		l:ClearAllPoints()
 		l:SetPoint("TOPLEFT", x(time), -20)
-		l:SetSize(2, 3 * LANE_H + 4)
+		l:SetSize(2, TAG_H + 2 * LANE_H + 4)
 		l:SetTexture(r, g, b, 0.9)
-		if label then
-			local m = stripPart(strip.marks)
-			m:ClearAllPoints()
-			if below then m:SetPoint("TOPLEFT", l, "BOTTOMLEFT", -20, 0) else m:SetPoint("BOTTOMLEFT", l, "TOPLEFT", -20, 0) end
-			m:SetSize(44, 12)
-			m.bg:SetTexture(0, 0, 0, 0)
-			m.text:SetText(label)
-			m.text:SetTextColor(r, g, b)
+		if text then
+			if below then label(l, "TOPLEFT", "BOTTOMLEFT", -20, 44, text, r, g, b) else label(l, "BOTTOMLEFT", "TOPLEFT", -20, 44, text, r, g, b) end
 		end
 	end
 	for i, lane in ipairs(s.lanes) do
 		strip.names[i]:SetText(lane.name)
 		for _, b in ipairs(lane.blocks) do
 			local r = b.row
-			local mine = r.player == playerName
-			local short = r.spell .. (r.player ~= lane.name and lane.name ~= "Raid" and (" (" .. r.player .. ")") or "")
-			if lane.name == "Raid" then short = r.spell .. " (" .. r.player .. ")" end
-			if mine then
-				block(i, b.from, b.to, 0.85, 0.65, 0.05, 0.95, short)
-			elseif raidByName[r.spell] then
-				block(i, b.from, b.to, 0.11, 0.54, 0.48, 0.9, short)
-			else
-				block(i, b.from, b.to, 0.77, 0.42, 0.07, 0.9, short)
-			end
+			local short = r.spell .. ((lane.name == "Raid" or r.player ~= r.target) and (" (" .. r.player .. ")") or "")
+			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, 0.9, short, r.player == playerName)
 		end
-		for _, g in ipairs(lane.gaps or {}) do block(i, g.from, g.to, 1, 0.2, 0.1, 0.45, "nothing up") end
+		for _, g in ipairs(lane.gaps or {}) do block(i, g.from, g.to, {1, 0.2, 0.1}, 0.45, "nothing up") end
+	end
+	-- whose lane it is: a tag in the tank's class colour at each handover
+	for _, tag in ipairs(s.lanes[1].tags) do
+		local unit = DBM:GetRaidUnitId(tag.name)
+		local cc = unit and RAID_CLASS_COLORS[select(2, UnitClass(unit)) or ""] or {r = 0.6, g = 0.6, b = 0.7}
+		local p = stripPart(strip.blocks)
+		p:ClearAllPoints()
+		p:SetPoint("TOPLEFT", x(tag.time) + 2, -20)
+		p:SetSize(70, TAG_H - 1)
+		p:SetBackdropColor(cc.r, cc.g, cc.b, 0.9)
+		p:SetBackdropBorderColor(0, 0, 0, 0)
+		p.text:SetText(tag.name)
+		local light = cc.r * 0.3 + cc.g * 0.59 + cc.b * 0.11 > 0.6
+		p.text:SetTextColor(light and 0 or 1, light and 0 or 1, light and 0 or 1)
 	end
 	for _, h in ipairs(s.smashes) do line(h, 1, 0.55, 0.23, "Smash") end
 	for _, w in ipairs(s.swaps) do line(w, 1, 0.82, 0, "Swap", true) end
@@ -1214,7 +1279,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 		for cast, c in pairs(data) do
 			local name = GetSpellInfo(cast)
 			if name then
-				defaultByName[name], tracked[name] = {c.dur, c.cd, c.power}, true
+				defaultByName[name], tracked[name], colorByName[name] = {c.dur, c.cd, c.power}, true, STRIP_COLORS[cast]
 				roleByName[name], raidByName[name], trinketByName[name], smashOnlyByName[name], notSelfByName[name] = c.role, c.raid, c.trinket, c.smashOnly, c.notSelf
 			end
 		end
