@@ -641,6 +641,8 @@ L.MOVE_WARNING_BAR						= "Announce movable"
 L.MOVE_WARNING_MESSAGE					= "Thanks for using " .. L.DEADLY_BOSS_MODS
 L.MOVE_SPECIAL_WARNING_BAR				= "Special warning movable"
 L.MOVE_SPECIAL_WARNING_TEXT				= "Special Warning"
+L.MOVE_WARNING_SIGN_BAR					= "Warning sign movable"
+L.MOVE_WARNING_SIGN_TEXT					= "DRAG ME"
 
 L.ARROW_MOVABLE							= "Arrow movable"
 L.ARROW_WAY_USAGE						= "/dway <x> <y>: Creates an arrow that points to a specific location (using local zone map coordinates)"

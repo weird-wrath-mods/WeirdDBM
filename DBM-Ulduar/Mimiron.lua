@@ -17,8 +17,8 @@ mod:RegisterEvents(
 
 mod:RegisterEventsInCombat(
 	"SPELL_CAST_START 63631 64529 62997 64570 64623 64383",
-	"SPELL_CAST_SUCCESS 63027 63414 65192 64533",
-	"SPELL_AURA_APPLIED 63666 65026 64529 62997 64616 64570 64533",
+	"SPELL_CAST_SUCCESS 63027 63414 65192 64533 64444",
+	"SPELL_AURA_APPLIED 63666 65026 64529 62997 64616 64533",
 	"SPELL_AURA_REMOVED 63666 65026",
 	"SPELL_DAMAGE 63041",
 	"SPELL_MISSED 63041",
@@ -49,7 +49,7 @@ local warnPlasmaBlast				= mod:NewTargetNoFilterAnnounce(64529, 4, nil, "Tank|He
 local specWarnShockBlast			= mod:NewSpecialWarningRun(63631, "Melee", nil, nil, 4, 2)
 local specWarnPlasmaBlast			= mod:NewSpecialWarningDefensive(64529, nil, nil, nil, 1, 2)
 
-local timerProximityMines			= mod:NewCDTimer(38, 63027, nil, nil, nil, 3)
+local timerProximityMines			= mod:NewCDTimer(38, 63027, nil, false, nil, 3)
 local timerShockBlast				= mod:NewCastTimer(4, 63631, nil, nil, nil, 2, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerNextShockBlast			= mod:NewNextTimer(30, 63631, nil, nil, nil, 2, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerNapalmShell				= mod:NewBuffActiveTimer(8, 63666, nil, "Healer", 2, 5, nil, DBM_COMMON_L.IMPORTANT_ICON..DBM_COMMON_L.HEALER_ICON)
@@ -66,7 +66,7 @@ local specWarnRocketStrike			= mod:NewSpecialWarningDodge(64402, nil, nil, nil, 
 
 local timerSpinUp					= mod:NewCastTimer(4, 63414, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerP3Wx2LaserBarrageCast	= mod:NewCastTimer(10, 63274, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
-local timerNextP3Wx2LaserBarrage	= mod:NewNextTimer(45, 63414, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
+local timerNextP3Wx2LaserBarrage	= mod:NewNextTimer(60, 63414, nil, nil, nil, 3, nil, DBM_COMMON_L.DEADLY_ICON)
 local timerRocketStrikeCD			= mod:NewCDTimer(20, 64402, nil, nil, nil, 3) -- AC: Repeat 20s
 local timerHeatWaveCD				= mod:NewCDCountTimer(10, 64533, nil, "Healer", 2, 5, nil, DBM_COMMON_L.HEALER_ICON)
 
@@ -87,19 +87,18 @@ local timerSelfRepair				= mod:NewCastSourceTimer(15, 64383, nil, nil, nil, 7, n
 mod:AddTimerLine(DBM_COMMON_L.HEROIC_ICON..DBM_CORE_L.HARD_MODE)
 local warnFlamesSoon				= mod:NewSoonAnnounce(64566, 1)
 
-local timerHardmode					= mod:NewTimer(600, "TimerHardmode", 64582, nil, nil, 6, nil, nil, nil, nil, nil, nil, nil, 64582) -- AC: 10min on both raid sizes
+local timerHardmode					= mod:NewTimer(600, "TimerHardmode", 64582, false, nil, 6, nil, nil, nil, nil, nil, nil, nil, 64582) -- AC: 10min from engage on both raid sizes
 local timerNextFlames				= mod:NewNextTimer(30, 64566, nil, nil, nil, 7, nil, DBM_COMMON_L.IMPORTANT_ICON, nil, 1, 5)
 
 -- Stage One
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(1)..": "..L.MobPhase1)
-local timerFlameSuppressantP1Debuff	= mod:NewBuffActiveTimer(8, 64570, nil, nil, nil, 3)
-local timerNextFlameSuppressantP1	= mod:NewCDTimer(60, 64570, nil, false, nil, 3)
+local timerNextFlameSuppressantP1	= mod:NewCDTimer(60, 64570, DBM:GetSpellInfo(64570), false, nil, 3) -- exact, so no "CD" in the label
 
 -- Stage Two
 mod:AddTimerLine(DBM_CORE_L.SCENARIO_STAGE:format(2)..": "..L.MobPhase2)
 local warnFrostBomb					= mod:NewSpellAnnounce(64623, 3)
 
-local timerFrostBombExplosion		= mod:NewCastTimer(13.5, 65333, nil, nil, nil, 3)
+local timerFrostBombExplosion		= mod:NewCastTimer(13.5, 65333, nil, false, nil, 3)
 local timerNextFrostBomb			= mod:NewNextTimer(45, 64623, nil, false, nil, 3, nil, DBM_COMMON_L.HEROIC_ICON, true) --disabled by default to reduce clutter; not part of classic DBM
 local timerNextFlameSuppressantP2	= mod:NewNextTimer(10, 65192, "Melee Flame Clear", false, nil, 3) --disabled by default to reduce clutter; not part of classic DBM
 
@@ -121,6 +120,7 @@ mod.vb.hardmode = false
 mod.vb.napalmShellIcon = 7
 mod.vb.heatwaveCounter = 0
 local spinningUp = DBM:GetSpellInfo(63414)
+local spinUpIcon = select(3, GetSpellInfo(63414))
 local lastSpinUp = 0
 mod.vb.is_spinningUp = false
 local napalmShellTargets = {}
@@ -140,9 +140,20 @@ end
 
 -- Bomb Bot (63811) is flagged SPELL_ATTR0_DO_NOT_LOG, so the only signal is UNIT_SPELLCAST_SUCCEEDED on a client that has
 -- the ACU as a unit (target/focus/mouseover). Sync it raid-wide, and keep the server's 15s repeat going when nobody saw it.
-local function BombBotLoop(self)
-	timerBombBotSpawn:Start()
-	self:Schedule(15, BombBotLoop, self) -- AC: events.Repeat(15s)
+local function BombBotLoop(self, delay)
+	delay = delay or 15 -- AC: events.Repeat(15s)
+	timerBombBotSpawn:Start(("v%.1f-%.1f"):format(delay, delay + 3)) -- up to 3s late: the ACU's own casts can hold the summon
+	self.vb.nextBombBot = GetTime() + delay
+	self:Schedule(delay, BombBotLoop, self)
+end
+
+-- AC: the Magnetic Core casts its aura on the ACU 3s after it is summoned, and the ACU then delays all its events by 23s
+local function MagneticCoreDelay(self)
+	local left = (self.vb.nextBombBot or 0) - GetTime()
+	if left > 0 then
+		self:Unschedule(BombBotLoop)
+		BombBotLoop(self, left + 23)
+	end
 end
 
 local function warnNapalmShellTargets(self)
@@ -154,6 +165,7 @@ end
 local function show_warning_for_spinup(self)
 	if self.vb.is_spinningUp then
 		specWarnP3Wx2LaserBarrage:Show()
+		if self.Options.SpecWarn63274dodge then DBM.WarningSign:Show(spinUpIcon, 4, spinningUp:upper(), "Interface\\AddOns\\DBM-Core\\sounds\\alarm1.wav") end
 		specWarnP3Wx2LaserBarrage:Play("watchstep")
 		specWarnP3Wx2LaserBarrage:ScheduleVoice(1, "keepmove")
 	end
@@ -204,8 +216,7 @@ local function NextPhase(self)
 		timerNextFlameSuppressantP2:Cancel()
 		timerP2toP3:Start()
 		-- AC: yell +17s ACU attacks, +15s summon cast starts, +2s cast finishes
-		timerBombBotSpawn:Start(34)
-		self:Schedule(34, BombBotLoop, self)
+		BombBotLoop(self, 34)
 		if self.Options.HealthFrame and self.Options.HealthFrameAllPhases then
 			DBM.BossHealth:Clear()
 			DBM.BossHealth:AddBoss(33670, L.MobPhase3)
@@ -301,9 +312,11 @@ function mod:SPELL_CAST_SUCCESS(args)
 		self.vb.is_spinningUp = true
 		timerSpinUp:Start()
 		timerP3Wx2LaserBarrageCast:Schedule(4)
-		timerNextP3Wx2LaserBarrage:Start()			-- AC: flat 45s cast-to-cast
+		timerNextP3Wx2LaserBarrage:Start("v60-62.7")	-- AC: Repeat(60s) cast-to-cast in P2 and P4; logs: 60.0-62.7s
 		self:Schedule(0.15, show_warning_for_spinup, self)
 		lastSpinUp = GetTime()
+	elseif spellId == 64444 and self.vb.phase == 3 then	-- Magnetic Core summoned under the ACU
+		self:Schedule(3, MagneticCoreDelay, self)
 	elseif spellId == 65192 then	-- Flame Suppressant CD (phase 2)
 		timerNextFlameSuppressantP2:Start()
 	end
@@ -328,8 +341,6 @@ function mod:SPELL_AURA_APPLIED(args)
 		end
 	elseif spellId == 64616 and args:IsPlayer() then	-- Deafening Siren (Hard Mode)
 		specWarnDeafeningSiren:Show()
-	elseif spellId == 64570 and args:IsPlayer() then	-- Flame Suppressant (phase 1)
-		timerFlameSuppressantP1Debuff:Start()
 	elseif spellId == 64533 and args:IsPlayer() then
 		if self:AntiSpam(3, 2) then
 			self.vb.heatwaveCounter = self.vb.heatwaveCounter + 1
@@ -404,11 +415,10 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 	elseif msg == L.YellHardPull or msg:find(L.YellHardPull) then -- register HARD Mode
 		self.vb.hardmode = true
 		self:SetWipeTime(10)
-		local is25 = self:IsDifficulty("normal25") or self:IsDifficulty("heroic25")
-		timerHardmode:Start(is25 and 600 or 480)
+		timerHardmode:Start(593) -- AC: berserk 10min from engage on both sizes; this yell comes 7s after engage
 		timerCombatStart:Start(13)
 		timerPlasmaBlastCD:Start(23)
-		timerNextFlameSuppressantP1:Start("v73-83")	-- AC: 60s after MK II engages (+13s intro), slips when Plasma Blast/Proximity Mines are mid-cast
+		timerNextFlameSuppressantP1:Start(79)	-- AC schedules 60s after MK II engages (+13s intro) but it slips ~6s every pull; logs: 56.4s after the first Plasma Blast
 		timerProximityMines:Start(19)
 		timerNextShockBlast:Start(33)
 		timerNextFlames:Start(7)
@@ -443,6 +453,7 @@ function mod:OnSync(event, args)
 	if event == "SpinUpFail" then
 		self.vb.is_spinningUp = false
 		timerSpinUp:Cancel()
+		DBM.WarningSign:Hide(spinUpIcon)
 		timerP3Wx2LaserBarrageCast:Cancel()
 		timerNextP3Wx2LaserBarrage:Cancel()
 		specWarnP3Wx2LaserBarrage:Cancel()

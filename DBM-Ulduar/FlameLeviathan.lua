@@ -27,7 +27,7 @@ local specWarnPursue			= mod:NewSpecialWarning("SpecialPursueWarnYou", nil, nil,
 
 local timerSystemOverload		= mod:NewBuffActiveTimer(20, 62475, nil, nil, nil, 6)
 local timerFlameVents			= mod:NewCastTimer(10, 62396, nil, nil, nil, 2, nil, DBM_COMMON_L.INTERRUPT_ICON)
-local timertFlameVentsCD		= mod:NewCDTimer(20, 62396, nil, nil, nil, 2)
+local timertFlameVentsCD		= mod:NewCDTimer(20, 62396, DBM:GetSpellInfo(62396), nil, nil, 2) -- exact, so no "CD" in the label
 local timerPursued				= mod:NewTargetTimer(31, 62374, nil, nil, nil, 3)
 
 -- Hard Mode
@@ -67,6 +67,7 @@ function mod:OnCombatStart(delay)
 	buildGuidTable(self)
 	self.vb.pursueCount = 0
 	timertFlameVentsCD:Start(20-delay) -- 25 man log review (2022/07/10 || 25m Lordaeron 2022/10/30) - 20.0 || 20.0
+	self.vb.nextVent = GetTime() + 20 - delay
 	self:Schedule(5, CheckTowers, self, delay)
 	DBM:Debug("OnCombatStart boss1 had speed: "..bossMovingSpeed)
 end
@@ -80,10 +81,15 @@ function mod:SPELL_AURA_APPLIED(args)
 	if spellId == 62396 then		-- Flame Vents
 		timerFlameVents:Start()
 		timertFlameVentsCD:Start()
+		self.vb.nextVent = GetTime() + 20
 	elseif spellId == 62475 then	-- Systems Shutdown / Overload
 		timerSystemOverload:Start()
-		timertFlameVentsCD:Stop()
-		timertFlameVentsCD:Start(40) -- Same for 10 and 25m (S3 FM 25HM cleu log 2022/07/16)
+		-- AC: the vent event keeps its 20s Repeat but can't cast through the 20s shutdown, so exactly one vent is lost
+		if self.vb.nextVent then
+			while self.vb.nextVent <= GetTime() do self.vb.nextVent = self.vb.nextVent + 20 end -- a vent the log missed
+			self.vb.nextVent = self.vb.nextVent + 20
+			timertFlameVentsCD:Start(self.vb.nextVent - GetTime())
+		end
 		specWarnSystemOverload:Show()
 		specWarnSystemOverload:Play("attacktank")
 	elseif spellId == 62374 then	-- Pursued

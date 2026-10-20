@@ -59,6 +59,7 @@ local default_settings = {
 		{ spell = 44389, bartext = default_bartext, cooldown = 600 },	-- Field Repair Bot 110G
 		{ spell = 54711, bartext = default_bartext, cooldown = 300 },	-- Scrapbot Construction Kit
 		{ spell = 67826, bartext = default_bartext, cooldown = 600 },	-- Jeeves
+		{ spell = 55233, bartext = default_bartext, cooldown = 15 },	-- Death Knight: Vampiric Blood Duration (12s, 15s glyphed; everyone glyphs it)
 
 	},
 	portal_alliance = {
@@ -279,8 +280,8 @@ do
 		for i, v in pairs(t2) do
 			if t1[i] == nil then
 				t1[i] = v
-			elseif type(v) == "table" then
-				addDefaultOptions(v, t2[i])
+			elseif type(v) == "table" and type(t1[i]) == "table" then
+				addDefaultOptions(t1[i], v)
 			end
 		end
 	end

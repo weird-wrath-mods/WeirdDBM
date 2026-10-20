@@ -1,7 +1,8 @@
 local mod	= DBM:NewMod("YoggSaron", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20268317220131")
+mod:SetRevision("20261017000000")
+mod:SetMinSyncRevision("20261017000000") -- ObservedHP went from absolute HP to percent
 mod:SetCreatureID(33288)
 mod:SetEncounterID(756)
 mod:RegisterCombat("combat_yell", L.YellPull)
@@ -10,6 +11,8 @@ mod:RegisterCombat("combat_yell", L.YellPull)
 --anyone until then. The default 5s wipe confirm ended the fight there and P2 never started.
 mod:SetWipeTime(18.5)
 mod:SetUsedIcons(1, 2, 3, 4, 5, 6, 7, 8)
+mod:AddBoolOption("HealthFrame", true) -- Brain and Crusher Tentacle bars from phase 2, shared across the raid
+mod:SetBossHealthInfo() -- no Yogg-Saron bar on pull
 
 mod:RegisterEventsInCombat(
 	"SPELL_CAST_START 64059 64189 63138 63830 63802 63134 63147",
@@ -19,7 +22,11 @@ mod:RegisterEventsInCombat(
 	"SPELL_AURA_REMOVED 63802 63894 64163 63830 63138 63881 64465",
 	"SPELL_AURA_REMOVED_DOSE 63050",
 	"CHAT_MSG_MONSTER_YELL",
-	"UNIT_HEALTH"
+	"UNIT_HEALTH",
+	"UNIT_DIED",
+	"UPDATE_MOUSEOVER_UNIT",
+	"UNIT_TARGET",
+	"PLAYER_FOCUS_CHANGED"
 --	"UNIT_SPELLCAST_START boss1"
 )
 
@@ -290,8 +297,154 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 	end
 end
 
+-- Brain of Yogg-Saron and Crusher Tentacle health. Part of the raid is in the brain while the rest
+-- fights tentacles, so each side rarely has the other's targets. Neither ever regains health
+-- (boss_yoggsaron.cpp: no regeneration, nothing heals them), so the lowest percent anyone has read
+-- off a unit is the current one: clients share new lows and keep the lowest. Each client reads only
+-- its own target, focus and mouseover; everything else comes by addon message. Percent, not HP: a
+-- client with partial data on a unit can be handed health as a percent of 100.
+local BRAIN_GUID, CRUSHER_GUID = "0xF130008462", "0xF1300084AE" -- 33890, 33966
+local CRUSHER_ROWS, OBSERVED_SYNC_EVERY = 3, 1
+local observed = {} -- guid -> {pct, dead, row, new}: lowest percent seen; new = our own low, not yet sent
+local crusherRows = {} -- up to 3 bars, each only while it has a crusher (row.guid); a crusher keeps its row
+local brainBar -- the brain bar's function, which is its id in BossHealth
+local brainGUID
+local lastObservedSync = 0
+
+local function isBrain(guid) return guid:sub(1, #BRAIN_GUID) == BRAIN_GUID end
+local function isCrusher(guid) return guid:sub(1, #CRUSHER_GUID) == CRUSHER_GUID end
+
+local function observedPct(guid, unseen)
+	local rec = guid and observed[guid]
+	if not rec or rec.pct == math.huge then return unseen end
+	if rec.dead then return 0 end
+	return rec.pct
+end
+
+-- A row's bar exists only while it shows a crusher. In phase 3 the frame goes when the last one does,
+-- and a crusher nobody had noticed until then brings it back.
+local function ensureRowBar(row)
+	if row.bar then return end
+	if not DBM.BossHealth:IsShown() then
+		if mod.vb.phase ~= 3 then return end -- phase 2: closed by hand, leave it closed
+		DBM.BossHealth:Show(L.name)
+	end
+	row.bar = function() return observedPct(row.guid, 0) end
+	DBM.BossHealth:AddBoss(row.bar, L.CrusherBar)
+end
+
+-- A crusher takes the first free row; any beyond 3 wait, oldest (lowest GUID) first
+local function fillCrusherRows()
+	for _, row in ipairs(crusherRows) do
+		if row.guid and observed[row.guid].dead then row.guid = nil end
+		if not row.guid then
+			local pick
+			for guid, rec in pairs(observed) do
+				if isCrusher(guid) and not rec.dead and not rec.row and (not pick or guid < pick) then pick = guid end
+			end
+			if pick then
+				row.guid, observed[pick].row = pick, row
+				ensureRowBar(row)
+			elseif row.bar then
+				DBM.BossHealth:RemoveBoss(row.bar)
+				row.bar = nil
+			end
+		end
+	end
+end
+
+-- pct 0 is a death. mine: read by this client, so others may not have it yet.
+local function observe(guid, pct, mine)
+	local rec = observed[guid]
+	if not rec then
+		rec = {pct = math.huge}
+		observed[guid] = rec
+		if isBrain(guid) then brainGUID = guid end
+	end
+	if rec.dead then return end
+	if pct <= 0 then
+		rec.dead = true
+		if mine then rec.new = true end
+	elseif pct < rec.pct then
+		rec.pct = pct
+		if mine then rec.new = true end
+	end
+	fillCrusherRows()
+end
+
+-- only units this client has itself: a raid member's target seen from the brain is not one of them
+local OWN_UNITS = {target = true, focus = true, mouseover = true}
+
+local function readObserved(uId)
+	if not OWN_UNITS[uId] then return end
+	local guid, max = UnitGUID(uId), UnitHealthMax(uId)
+	if not guid or not (isBrain(guid) or isCrusher(guid)) or max == 0 then return end
+	observe(guid, UnitIsDead(uId) and 0 or UnitHealth(uId) / max * 100, true)
+end
+
+local function readAllObserved()
+	for uId in pairs(OWN_UNITS) do readObserved(uId) end
+end
+
+local function sendObserved(now)
+	local parts = {}
+	for guid, rec in pairs(observed) do
+		if rec.new then
+			parts[#parts + 1] = guid:sub(7) .. ":" .. (rec.dead and "0" or ("%.2f"):format(rec.pct))
+			rec.new = nil
+		end
+	end
+	if parts[1] then
+		lastObservedSync = now
+		mod:SendSync("ObservedHP", table.concat(parts, ","))
+	end
+end
+
+-- Phase 3 starts when the brain drops below 30% (boss_yoggsaron.cpp HealthBelowPctDamaged(30); every
+-- logged pull that got there stopped at 29.9-30.5%), so that part of the bar is yellow
+local BRAIN_P3_PCT = 30
+local GREEN, YELLOW = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}
+
+local function brainBarValue()
+	local pct = observedPct(brainGUID, 100) -- full until someone sees it hit
+	local low = math.min(pct, BRAIN_P3_PCT)
+	return pct, nil, {segs = {
+		{0, low, YELLOW[1], YELLOW[2], YELLOW[3]},
+		{BRAIN_P3_PCT, pct, GREEN[1], GREEN[2], GREEN[3]},
+	}}
+end
+
+local function showObservedBars()
+	DBM.BossHealth:Show(L.name)
+	brainBar = brainBarValue
+	DBM.BossHealth:AddBoss(brainBar, L.BrainBar)
+	for i = 1, CRUSHER_ROWS do crusherRows[i] = {} end -- bars come with the crushers
+	fillCrusherRows()
+end
+
+-- Phase 3: the brain no longer matters, so only living crushers stay up
+local function trimForPhase3()
+	if brainBar then DBM.BossHealth:RemoveBoss(brainBar) brainBar = nil end
+	for _, row in ipairs(crusherRows) do
+		if row.bar then return end
+	end
+	DBM.BossHealth:Hide()
+end
+
+mod:RegisterOnUpdateHandler(function(self)
+	-- reading and sharing run with the frame off too, so a player who hides it still feeds the raid
+	if not self:IsInCombat() or self.vb.phase < 2 then return end
+	local now = GetTime()
+	readAllObserved()
+	if now - lastObservedSync >= OBSERVED_SYNC_EVERY then sendObserved(now) end
+	if self.Options.HealthFrame and self.vb.phase == 3 and DBM.BossHealth:IsShown() then trimForPhase3() end
+end, 0.5)
+
 function mod:OnCombatStart()
 	self:SetStage(1)
+	table.wipe(observed)
+	table.wipe(crusherRows)
+	brainGUID, brainBar, lastObservedSync = nil, nil, 0
 	self.vb.brainLinkIcon = 2
 	self.vb.beaconIcon = 8
 	self.vb.Guardians = 0
@@ -311,12 +464,12 @@ function mod:OnCombatStart()
 		DBM.InfoFrame:SetHeader(SanityBuff)
 		DBM.InfoFrame:Show(30, "playerdebuffstacks", SanityBuff, 2)--Sorted lowest first (highest first is default of arg not given)
 	end
+	-- DBM-Core opened the frame (empty) if HealthFrame is on
 	if self.Options.ShowSaraHealth then
-		if not self.Options.HealthFrame then
-			DBM.BossHealth:Show(L.name)
-		else
-			DBM.BossHealth:AddBoss(33134, L.Sara)
-		end
+		if not DBM.BossHealth:IsShown() then DBM.BossHealth:Show(L.name) end
+		DBM.BossHealth:AddBoss(33134, L.Sara)
+	elseif self.Options.HealthFrame then
+		DBM.BossHealth:Hide() -- nothing to show until phase 2
 	end
 end
 
@@ -468,11 +621,10 @@ function mod:SPELL_AURA_APPLIED(args)
 		specWarnBrainPortalSoon:Schedule(56)
 		warnP2:Show()
 		warnP2:Play("ptwo")
-		if self.Options.ShowSaraHealth then
-			DBM.BossHealth:RemoveBoss(33134)
-			if not self.Options.HealthFrame then
-				DBM.BossHealth:Hide()
-			end
+		if self.Options.HealthFrame then
+			showObservedBars() -- replaces Sara's bar
+		elseif self.Options.ShowSaraHealth then
+			DBM.BossHealth:Hide()
 		end
 	elseif spellId == 64163 then	-- Lunatic Gaze phase 3 (reduces sanity) ; 64167 Lunatic Gaze is related to Laughing Skulls, which is not important
 		specWarnLunaticGaze:Show(args.sourceName)
@@ -523,6 +675,7 @@ function mod:SPELL_AURA_REMOVED_DOSE(args)
 end
 
 function mod:UNIT_HEALTH(uId)
+	if self.vb.phase >= 2 then readObserved(uId) end
 	if self.vb.phase == 1 and uId == "target" and self:GetUnitCreatureId(uId) == 33136 and UnitHealth(uId) / UnitHealthMax(uId) <= 0.3 and not targetWarningsShown[UnitGUID(uId)] then
 		targetWarningsShown[UnitGUID(uId)] = true
 		specWarnGuardianLow:Show()
@@ -545,9 +698,34 @@ end]]
 --so it is there on the tick with no delay -- and with no combat log event either, which is why this
 --runs open loop with nothing to resync against. Safe here: of his phase 3 casts only Deafening Roar
 --has a cast time to stall a tick on, and that one is hard mode only (:1297).
-function mod:OnSync(msg)
-	if msg == "Phase3" then
+function mod:UNIT_DIED(args)
+	if self.vb.phase >= 2 and isCrusher(args.destGUID) then
+		observe(args.destGUID, 0, true)
+	end
+end
+
+-- Seen the moment it is moused over or targeted, not on the next 0.5s scan
+function mod:UPDATE_MOUSEOVER_UNIT()
+	if self.vb.phase >= 2 then readObserved("mouseover") end
+end
+
+function mod:UNIT_TARGET(uId)
+	if uId == "player" and self.vb.phase >= 2 then readObserved("target") end
+end
+
+function mod:PLAYER_FOCUS_CHANGED()
+	if self.vb.phase >= 2 then readObserved("focus") end
+end
+
+function mod:OnSync(msg, payload, sender)
+	if msg == "ObservedHP" then
+		if not payload or sender == UnitName("player") then return end
+		for tail, pct in payload:gmatch("(%x+):([%d.]+)") do
+			observe("0xF130" .. tail, tonumber(pct), false)
+		end
+	elseif msg == "Phase3" then
 		self:SetStage(3)
+		if self.Options.HealthFrame and DBM.BossHealth:IsShown() then trimForPhase3() end
 		timerBrainPortal:Cancel()
 		warnBrainPortalSoon:Cancel()
 		timerMaladyCD:Cancel()

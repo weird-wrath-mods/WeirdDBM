@@ -35,9 +35,8 @@ local specWarnSearingFlames			= mod:NewSpecialWarningInterruptCount(62661, "HasI
 
 local timerEnrage					= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 local timerSearingFlamesCast		= mod:NewCastTimer(2, 62661, nil, nil, nil, 5, nil, DBM_COMMON_L.INTERRUPT_ICON)
-local timerSurgeofDarkness			= mod:NewBuffActiveTimer(10, 62662, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON)
-local timerNextSurgeofDarkness		= mod:NewCDTimer(63, 62662, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON) -- 63s on AC
-local timerSaroniteVapors			= mod:NewNextCountTimer(30, 63322, nil, nil, nil, 5, nil, DBM_COMMON_L.HEALER_ICON) -- Emote not fired if out of range (confirmed as of 2022/07/25). Has variance, but apply 30s regardless
+local timerSurgeofDarkness			= mod:NewBuffActiveTimer(10, 62662, nil, false, nil, 5, nil, DBM_COMMON_L.TANK_ICON)
+local timerNextSurgeofDarkness		= mod:NewCDTimer(63, 62662, nil, false, nil, 5, nil, DBM_COMMON_L.TANK_ICON) -- 63s on AC
 local timerShadowCrashCD			= mod:NewCDTimer(10, 62660, nil, "Ranged", nil, 3) -- 13s on AC
 local timerMarkoftheFaceless		= mod:NewTargetTimer(10, 63276, nil, false, 2, 3, nil, DBM_COMMON_L.IMPORTANT_ICON)
 local timerMarkoftheFacelessCD		= mod:NewCDTimer(40, 63276, nil, nil, nil, 3, nil, DBM_COMMON_L.IMPORTANT_ICON) -- 40s on AC
@@ -50,18 +49,48 @@ mod:AddArrowOption("CrashArrow", 62660, true)
 mod:AddTimerLine(DBM_COMMON_L.HEROIC_ICON..DBM_CORE_L.HARD_MODE)
 local specWarnAnimus			= mod:NewSpecialWarningSwitch(63145, nil, nil, nil, 1, 2)
 
-local timerHardmode				= mod:NewTimer(212, "hardmodeSpawn", nil, nil, nil, 1) -- S3 VOD review 2022/07/15
+local timerHardmode				= mod:NewTimer(188, "hardmodeSpawn", nil, nil, nil, 1)
+mod:AddBoolOption("VaporKilledSign", true)
+local vaporIcon = select(3, GetSpellInfo(63322))
 
 mod.vb.interruptCount = 0
-mod.vb.vaporsCount = 0
+mod.vb.hardmodeLost = false
 
-local function saroniteVaporsSpawned(self)
-	self.vb.vaporsCount = self.vb.vaporsCount + 1
-	warnSaroniteVapor:Show(self.vb.vaporsCount)
-	if self.vb.vaporsCount < 6 then
-		timerSaroniteVapors:Start(nil, self.vb.vaporsCount + 1)
-		self:Schedule(30, saroniteVaporsSpawned, self) -- only first 6 spawns are relevant for Hard Mode
+-- AC: a vapor every 30s from engage; after the 6th a 6s swirl and 2s more to the Animus. No event runs
+-- while Vezax casts, so a vapor due during a Searing Flames (2s) or Surge of Darkness (3s) cast spawns
+-- when the cast ends (or is interrupted), and the next is 30s after that. The mod follows the same
+-- schedule from his casts; the vapor emote, when anyone gets it, pins it to the real spawn.
+local VAPOR_EVERY, ANIMUS_AFTER_6TH = 30, 8
+local CAST_TIME = {[62661] = 2, [62662] = 3}
+local pullTime, castEnd, shownAnimus = 0, 0, nil
+
+-- one bar for the whole wait: a later vapor or a cast delay moves its end, it doesn't restart it
+local function animusBar(self)
+	if self.vb.hardmodeLost then return end
+	local at = self.vb.nextVapor + (5 - self.vb.vapors) * VAPOR_EVERY + ANIMUS_AFTER_6TH
+	if not shownAnimus or timerHardmode:GetTime() == 0 then
+		timerHardmode:Start(at - GetTime())
+	elseif at > shownAnimus + 0.01 then
+		timerHardmode:AddTime(at - shownAnimus)
+	elseif at < shownAnimus - 0.01 then
+		timerHardmode:RemoveTime(shownAnimus - at)
 	end
+	shownAnimus = at
+end
+
+local vaporDue
+vaporDue = function(self)
+	local now = GetTime()
+	if castEnd > now then -- waits out the cast
+		self.vb.nextVapor = castEnd
+		self:Schedule(castEnd - now, vaporDue, self)
+		animusBar(self)
+		return
+	end
+	self.vb.vapors = self.vb.vapors + 1
+	self.vb.nextVapor = now + VAPOR_EVERY
+	if self.vb.vapors < 6 then self:Schedule(VAPOR_EVERY, vaporDue, self) end
+	animusBar(self)
 end
 
 --[[function mod:ShadowCrashTarget(targetname, uId)
@@ -91,13 +120,14 @@ end]]
 
 function mod:OnCombatStart(delay)
 	self.vb.interruptCount = 0
-	self.vb.vaporsCount = 0
+	self.vb.hardmodeLost = false
+	pullTime, castEnd, shownAnimus = GetTime() - delay, 0, nil
+	self.vb.vapors, self.vb.nextVapor = 0, pullTime + VAPOR_EVERY
+	self:Schedule(VAPOR_EVERY - delay, vaporDue, self)
 	timerShadowCrashCD:Start(13-delay) --13s on AC
 	timerMarkoftheFacelessCD:Start(20-delay) -- 20s on AC
-	timerSaroniteVapors:Start(30.0-delay, 1) -- Log reviewed (25 man NM log review 2022/07/10)
-	self:Schedule(30-delay, saroniteVaporsSpawned, self)
 	timerEnrage:Start(-delay)
-	timerHardmode:Start(-delay)
+	animusBar(self)
 	timerNextSurgeofDarkness:Start(-delay) -- REVIEW! 10s variance [50-60]? (25 man NM log 2022/07/10 || S3 HM log 2022/07/21) - 60.0 || 60.0
 end
 
@@ -105,6 +135,7 @@ end
 -- EDIT 20/09/2022: after several log reviews and troubleshooting, https://www.warmane.com/bugtracker/report/112497 has been fixed serverside. Reinstating CLEU events.
 function mod:SPELL_CAST_START(args)
 	local spellId = args.spellId
+	if CAST_TIME[spellId] then castEnd = GetTime() + CAST_TIME[spellId] end
 	if spellId == 62661 then	-- Searing Flames
 		self.vb.interruptCount = self.vb.interruptCount + 1
 		if self.vb.interruptCount == 4 then
@@ -204,17 +235,27 @@ end
 function mod:SPELL_INTERRUPT(args)
 	if args.spellId == 62661 then
 		timerSearingFlamesCast:Stop()
+		local waiting = castEnd > GetTime() and self.vb.nextVapor == castEnd
+		castEnd = GetTime()
+		if waiting then -- the vapor it was holding spawns now
+			self:Unschedule(vaporDue)
+			vaporDue(self)
+		end
 	end
 end
 
 function mod:UNIT_DIED(args)
 	local cid = self:GetCIDFromGUID(args.destGUID)
-	if cid == 33488 then--Saronite Vapor
+	if cid == 33488 then--Saronite Vapor: a dead one ends hard mode (AC DoAction 1)
+		if not self.vb.hardmodeLost and self.Options.VaporKilledSign then
+			DBM.WarningSign:Show(vaporIcon, 5, L.HardModeLost, nil, true)
+		end
+		self.vb.hardmodeLost = true
 		timerHardmode:Stop()
 	end
 end
 
--- Range restriced, not reliable enough to sync CHAT_MSG_RAID_BOSS_EMOTE, so a repeating schedule was implemented instead and emote is only used for timer correction.
+-- Range restricted (players near Vezax get it), so it is synced raid-wide
 function mod:CHAT_MSG_RAID_BOSS_EMOTE(emote)
 	if emote == L.EmoteSaroniteVapors or emote:find(L.EmoteSaroniteVapors) then
 		self:SendSync("SaroniteVaporsSpawned")
@@ -254,8 +295,14 @@ end]]
 
 function mod:OnSync(msg)
 	if msg == "SaroniteVaporsSpawned" and self:AntiSpam(3, 1) then
-		self:Unschedule(saroniteVaporsSpawned)
-		self:Schedule(30, saroniteVaporsSpawned, self)
-		timerSaroniteVapors:Restart(30, self.vb.vaporsCount + 1)
+		-- which vapor from the time since engage, so a missed emote can't throw the count off
+		local n = math.floor((GetTime() - pullTime) / VAPOR_EVERY + 0.5)
+		warnSaroniteVapor:Show(n)
+		if n >= 1 and n <= 6 then
+			self:Unschedule(vaporDue)
+			self.vb.vapors, self.vb.nextVapor = n, GetTime() + VAPOR_EVERY
+			if n < 6 then self:Schedule(VAPOR_EVERY, vaporDue, self) end
+			animusBar(self)
+		end
 	end
 end

@@ -17,7 +17,7 @@
 ## LoadOnDemand: 0
 ## DefaultState: enabled
 ## Author: Barsoom, Bunny67, Zidras, DBM-Frostmourne contributors, original DBM team
-## Version: 10.1.25 wv
+## Version: 10.1.28 wv
 ## X-Website: https://github.com/weird-wrath-mods/WeirdDBM
 ## X-DisplayName: WeirdDBM
 
@@ -79,6 +79,7 @@ modules\TargetScanning.lua
 DBM-Core.lua
 DBM-Arrow.lua
 DBM-Flash.lua
+DBM-WarningSign.lua
 DBM-RangeCheck.lua
 DBM-InfoFrame.lua
 DBM-BossHealth.lua

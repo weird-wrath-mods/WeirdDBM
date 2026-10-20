@@ -82,9 +82,9 @@ local function currentFullDate()
 end
 
 DBM = {
-	Revision = parseCurseDate("20261008000000"), -- keep in step with ReleaseRevision; if it lags, same-build clients nag each other as out of date
+	Revision = parseCurseDate("20261019000000"), -- keep in step with ReleaseRevision; if it lags, same-build clients nag each other as out of date
 	DisplayVersion = GetAddOnMetadata("DBM-Core", "Version") or "<unknown version>", -- read from the TOC ## Version (single source of truth)
-	ReleaseRevision = releaseDate(2026, 10, 08) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
+	ReleaseRevision = releaseDate(2026, 10, 19) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
 }
 
 local fakeBWVersion = 7558
@@ -290,6 +290,10 @@ DBM.DefaultOptions = {
 	SpecialWarningPoint = "CENTER",
 	SpecialWarningX = 0,
 	SpecialWarningY = 75,
+	WarningSignPoint = "CENTER",
+	WarningSignX = 300,
+	WarningSignY = 250, -- up and right of centre, beside the raid warnings (CENTER +260)
+	WarningSignScale = 1,
 	SpecialWarningFont = "standardFont",
 	SpecialWarningFontSize2 = 35,
 	SpecialWarningFontStyle = "THICKOUTLINE",
@@ -2436,7 +2440,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 9
+local WEIRD_DEFAULT_REV = 12
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2492,6 +2496,20 @@ local weirdDefaultMigrations = {
 	[9] = {
 		-- Mimiron health frame default ON: phase 4 parts only, everyone is targeting one of them
 		Mimiron = {"HealthFrame"},
+	},
+	[10] = {
+		-- Yogg-Saron health frame default ON: Brain and Crusher Tentacle bars, shared across the raid
+		YoggSaron = {"HealthFrame"},
+	},
+	[11] = {
+		-- Mimiron Proximity Mines timer default OFF: the mines are visible on the ground, the timer only adds clutter.
+		-- Self-destruct (hard mode enrage) default OFF: missed by the rev 1 berserk sweep, it is a custom timer, not NewBerserkTimer
+		-- Frost Bomb Explosion cast bar default OFF (the Next Frost Bomb timer was already off)
+		Mimiron = {"Timer63027cd", "TimerHardmode", "Timer65333cast"},
+	},
+	[12] = {
+		-- Vezax Surge of Darkness bars (next and active) default OFF
+		GeneralVezax = {"Timer62662cd", "Timer62662active"},
 	},
 }
 
