@@ -46,7 +46,8 @@ local warnLightningCharge			= mod:NewSpellAnnounce(62466, 2)
 local specWarnUnbalancingStrikeSelf	= mod:NewSpecialWarningDefensive(62130, nil, nil, nil, 1, 2)
 local specWarnUnbalancingStrike		= mod:NewSpecialWarningTaunt(62130, nil, nil, nil, 1, 2)
 
-local timerLightningCharge			= mod:NewVarTimer(15, 62466, nil, nil, nil, 3) --15s on AC
+local timerLightningCharge			= mod:NewVarTimer(10, 62466, "TimerLightningChargeCast", nil, nil, 3) -- ends as the wind-up starts (sign below)
+local timerLightningChargeCast		= mod:NewCastTimer(5, 62466, nil, nil, nil, 3) -- the wind-up itself
 local timerUnbalancingStrike		= mod:NewCDTimer(20, 62130, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON) --20s on AC
 local timerChainLightning			= mod:NewNextTimer(15, 64390) --15s on AC
 
@@ -55,17 +56,18 @@ mod:AddBoolOption("LightningChargeSign", true, "announce", nil, nil, nil, 62466)
 
 -- AC: the charge event lights a pillar, whose orb gets Lightning Orb Charged (62186, 5s) and the charge lands when
 -- it ends; the event recurs 10s after each charge (logs: 15.0s apart, first 17.5s into stage 2). Nothing before the
--- charge reaches the combat log, so the sign is timed off the last charge.
+-- charge reaches the combat log, so the wind-up (cast bar and sign) is timed off the last charge.
 local CHARGE_WINDUP, CHARGE_REPEAT = 5, 10
 local chargeName, _, chargeIcon = GetSpellInfo(62466)
-local function chargeSign(self)
+local function chargeWindup(self)
+	timerLightningChargeCast:Start()
 	if self.Options.LightningChargeSign then
 		DBM.WarningSign:Show(chargeIcon, CHARGE_WINDUP, chargeName:upper())
 	end
 end
 local function chargeLanded(self)
-	self:Unschedule(chargeSign)
-	self:Schedule(CHARGE_REPEAT, chargeSign, self)
+	self:Unschedule(chargeWindup)
+	self:Schedule(CHARGE_REPEAT, chargeWindup, self)
 end
 
 -- Hard Mode
@@ -242,7 +244,7 @@ function mod:OnSync(event)
 		timerHardmode:Stop() -- Phase 2 detection happens before the yell, so keep this here
 		timerStormhammerCD:Stop()
 		enrageTimerStage2:Start(300)
-		timerLightningCharge:Start(17.5)
-		self:Schedule(17.5 - CHARGE_WINDUP, chargeSign, self)
+		timerLightningCharge:Start(17.5 - CHARGE_WINDUP)
+		self:Schedule(17.5 - CHARGE_WINDUP, chargeWindup, self)
 	end
 end

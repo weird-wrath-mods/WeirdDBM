@@ -261,7 +261,8 @@ L:SetWarningLocalization({
 })
 
 L:SetTimerLocalization({
-	TimerHardmode		= "Hard mode"
+	TimerHardmode		= "Hard mode",
+	TimerLightningChargeCast	= "Lightning Charge Cast"
 })
 
 L:SetOptionLocalization({
