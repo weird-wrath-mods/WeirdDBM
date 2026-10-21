@@ -2440,7 +2440,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 12
+local WEIRD_DEFAULT_REV = 13
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2510,6 +2510,10 @@ local weirdDefaultMigrations = {
 	[12] = {
 		-- Vezax Surge of Darkness bars (next and active) default OFF
 		GeneralVezax = {"Timer62662cd", "Timer62662active"},
+	},
+	[13] = {
+		-- Thorim: Sif's Frost Nova (next and cast) and Frostbolt Volley bars default OFF
+		Thorim = {"Timer62605cd", "Timer62605cast", "Timer62604cd"},
 	},
 }
 
