@@ -2459,7 +2459,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 13
+local WEIRD_DEFAULT_REV = 14
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2534,6 +2534,10 @@ local weirdDefaultMigrations = {
 		-- Thorim: Sif's Frost Nova (next and cast) and Frostbolt Volley bars default OFF
 		Thorim = {"Timer62605cd", "Timer62605cast", "Timer62604cd"},
 	},
+	[14] = {
+		-- Mimiron Heat Wave bar back to its "Healer" default for everyone who clicked it (re-resolves per character again)
+		Mimiron = {"Timer64533cdcount"},
+	},
 }
 
 function DBM:LoadModOptions(modId, inCombat, first, profileName, profileID)
@@ -2604,6 +2608,8 @@ function DBM:LoadModOptions(modId, inCombat, first, profileName, profileID)
 								default = default.value
 							elseif type(default) == "string" then
 								default = mod:GetRoleFlagValue(default)
+								-- a spec-flag default goes back to re-resolving per character on every load, as if never clicked
+								savedOptions[id][profileNum][opt .. "SpecAutoForced"] = nil
 							end
 							if default ~= nil then
 								savedOptions[id][profileNum][opt] = default
