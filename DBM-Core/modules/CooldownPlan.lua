@@ -152,10 +152,10 @@ function CP.Check(plan)
 end
 
 -- Algalon's fight, in seconds from the end of the roleplay (boss_algalon_the_observer.cpp, JustEngagedWith
--- and UpdateAI): Phase Punch every 15.5s from 15.5, Cosmic Smash cast every 25.5s from 26 and landing 4s
+-- and UpdateAI): Phase Punch every 15.5s from 15.5, Cosmic Smash cast every 25.5s from 26 and landing 5s
 -- later, Big Bang every 90.5s from 90. Big Bang's DelayEventsToMax(11s, GROUP_COMBAT) moves any punch or
 -- smash due within 11s of it to exactly 11s after it, and their cadence carries on from there.
-local PUNCH, SMASH, BANG, BANG_HOLD, SMASH_LANDS = 15.5, 25.5, 90.5, 11, 4
+local PUNCH, SMASH, BANG, BANG_HOLD, SMASH_LANDS = 15.5, 25.5, 90.5, 11, 5
 local FIGHT = 360	-- Ascend to the Heavens
 local STACKS = 4	-- a tank takes 4 punches, then the other taunts
 local SWAP_DELAY = 4	-- ...this long after the 4th, leaving time to taunt again on a miss before the 5th
@@ -166,13 +166,15 @@ local RETRY_ROOM = 9	-- but always leaving this long before the next punch: a ta
 -- no new cooldown on the outgoing tank this close to their swap, or after it: even the shortest would be mostly wasted
 local SWAP_QUIET = 4
 
-local punches, smashCasts = {}, {}
+local BANG_LANDS = 8	-- Big Bang's cast (its damage lands 7.98s after the cast starts, in the logs)
+local punches, smashCasts, bangCasts = {}, {}, {}
 do
 	local nextPunch, nextSmash, nextBang = 15.5, 26, 90
 	while true do
 		local t = math.min(nextPunch, nextSmash, nextBang)
 		if t >= FIGHT then break end
 		if t == nextBang then
+			bangCasts[#bangCasts + 1] = t
 			if nextPunch < t + BANG_HOLD then nextPunch = t + BANG_HOLD end
 			if nextSmash < t + BANG_HOLD then nextSmash = t + BANG_HOLD end
 			nextBang = t + BANG
@@ -227,38 +229,51 @@ function CP.SmashTimes(from, stop)
 	return out
 end
 
+-- when each Big Bang lands
+function CP.BangTimes(from, stop)
+	local out = {}
+	for _, c in ipairs(bangCasts) do
+		local t = c + BANG_LANDS
+		if t >= from and t < stop then out[#out + 1] = t end
+	end
+	return out
+end
+CP.SMASH_CAST, CP.BANG_CAST = SMASH_LANDS, BANG_LANDS
+
 local function round(t) return math.floor(t * 2 + 0.5) / 2 end
 
--- a raid-wide cooldown goes up this long before the smash lands: mid-buff for the 6s ones, so a press up to 3s
--- off still covers it. Divine Guardian also covers the tank, so it only goes that early where the tank isn't
--- already covered, and otherwise as early as it can without overlapping that cover, but never later than RAID_LEAD_MIN.
-local RAID_LEAD, RAID_LEAD_MIN = 3, 1
-local PLAYER_GAP = 10	-- least time between two planned presses by one player: time to read the card and press. Free on the usual roster; 12s costs a thinner roster a smash
+local PLAYER_GAP = 10	-- least time between two planned presses by one player: time to read the card and press
 local GAP_OK = 1	-- a hole this short before a planned cooldown isn't worth spending another on
+-- a variation tries each smash with a raid-wide cooldown on the tank this long before it lands (mid-buff for the 6s
+-- Divine Sacrifice, so a press up to 3s off still covers it). 0.4 of smashes: over 49 sample rosters it took smashes
+-- covered from 17 to 111 of 637 with tank time no worse; 0.7 started costing tank time
+local SMASH_LEAD, SMASH_TRY = 3, 0.4
 
 -- A plan for the rest of the fight from fight time opts.from, as rows like CP.Parse's.
 -- opts.pool: {player, spell, dur, cd, readyAt (fight time), role = "big"|"self"|"ext", raid} per cooldown;
 -- opts.tanks: the two tanks, opts.tank: which of them has the boss at opts.from (default 1);
 -- opts.covered: [tank] = fight time their current cooldown runs to (default from);
+-- opts.running: {tank, from, to} per cast still up at opts.from, which nothing new may overlap;
 -- opts.used: [pool index] = fight times it was already used (so it isn't planned again too soon);
 -- opts.swaps: expected swap times (default CP.SwapTimes); opts.stop (default FIGHT);
 -- opts.weaker: the tank to fill first, so the shared externals go to them before the stronger tank.
--- In order: each tank's big cooldown at the pull and at each swap-in; raid-wide cooldowns on Cosmic
--- Smash; the rest of each tank's time filled with real cooldowns, the tank's own before shared ones, unused
--- longest first; then trinkets, too weak to count as cover, into their owner's holes and next to their owner's
--- weakest cooldowns. Returns rows, problems, score.
-local function build(opts, rng)
+-- In order: each tank's big cooldown at the pull and at each swap-in; the rest of each tank's time filled with
+-- real cooldowns, the tank's own before shared ones, unused longest first; then trinkets, too weak to count as
+-- cover, into their owner's holes and next to their owner's weakest cooldowns. Nothing is planned for Cosmic
+-- Smash: the strip shows where each lands instead. Returns rows, problems, score.
+local function build(opts, rng, smashRng)
 	local from, stop = opts.from or 0, opts.stop or FIGHT
 	local swaps = opts.swaps or CP.SwapTimes(from, stop)
 	local tanks, tank = opts.tanks, opts.tank or 1
 	local covered = opts.covered or {}
 	local pool = opts.pool
 	local rows, problems, uncovered, holes = {}, {}, 0, {}
-	local bigMissed, smashMissed = 0, 0
+	local bigMissed = 0
 	local uses = {}	-- [i] = fight times planned or used
-	local trinketByPool, bigByPool = {}, {}
+	local trinketByPool, bigByPool, raidByPool = {}, {}, {}
 	for _, c in ipairs(pool) do
 		if c.trinket then trinketByPool[c.player .. "\0" .. c.spell] = true end
+		if c.raid then raidByPool[c.player .. "\0" .. c.spell] = true end
 		if c.role == "big" then bigByPool[c.player .. "\0" .. c.spell] = true end
 	end
 	for i in ipairs(pool) do
@@ -297,6 +312,11 @@ local function build(opts, rng)
 		end
 	end
 	local fixed = {}	-- [who] = {{from, to}} already covered
+	for _, x in ipairs(opts.running or {}) do -- casts still up from before opts.from (CP.Replan)
+		fixed[x[1]] = fixed[x[1]] or {}
+		table.insert(fixed[x[1]], {x[2], x[3]})
+	end
+	local raidOn = {}	-- [who] = {{from, to}} of raid-wide cooldowns on them
 	local function use(i, t, who, note)
 		local c = pool[i]
 		if c.smashOnly then who = nil end -- the raid's, not the tank's
@@ -305,7 +325,16 @@ local function build(opts, rng)
 		if who and not c.trinket then -- a trinket isn't cover: it goes up beside cooldowns, never instead of them
 			fixed[who] = fixed[who] or {}
 			table.insert(fixed[who], {t, t + c.dur})
+			if c.raid then raidOn[who] = raidOn[who] or {} table.insert(raidOn[who], {t, t + c.dur}) end
 		end
+	end
+	-- a raid-wide cooldown right before or after another on the same tank: two Divine Sacrifices back to back read
+	-- as one block on the strip
+	local function besideRaid(who, a, b)
+		for _, f in ipairs(raidOn[who] or {}) do
+			if math.abs(f[2] - a) < 0.01 or math.abs(f[1] - b) < 0.01 then return true end
+		end
+		return false
 	end
 	-- does who already have cover somewhere in [a, b)
 	local function covers(who, a, b)
@@ -338,13 +367,12 @@ local function build(opts, rng)
 	end
 
 	-- 0: uses carried over as they are from the plan being repaired (CP.Replan's opts.keep)
-	local keptSwap, keptRaid = {}, {}
+	local keptSwap = {}
 	for _, r in ipairs(opts.keep or {}) do
 		for i, c in ipairs(pool) do
 			if c.player == r.player and c.spell == r.spell then
 				use(i, r.time, r.target, r.note)
-				if c.role == "big" then keptSwap[#keptSwap + 1] = r end -- the pull's or a swap's
-				if c.raid then keptRaid[#keptRaid + 1] = {r.time, r.time + c.dur} end
+				if c.role == "big" or r.note == "Tank swap" then keptSwap[#keptSwap + 1] = r end -- the pull's or a swap's, big or the fallback
 				break
 			end
 		end
@@ -364,7 +392,7 @@ local function build(opts, rng)
 			end
 			if not pick then
 				for i, c in ipairs(pool) do
-					if usable(c, who) and not c.raid and free(i, press) and (not pick or c.dur > pool[pick].dur) then pick = i end
+					if usable(c, who) and not c.raid and not c.trinket and free(i, press) and not covers(who, press, press + c.dur) and (not pick or c.dur > pool[pick].dur) then pick = i end
 				end
 				problems[#problems + 1] = ("%s has no big cooldown ready at %s"):format(who, s > 1 and ("the swap at " .. round(at) .. "s") or "the pull")
 				bigMissed = bigMissed + 1
@@ -372,48 +400,20 @@ local function build(opts, rng)
 			if pick then use(pick, press, who, s > 1 and "Tank swap" or nil) end
 		end
 	end
-	-- 2: raid-wide cooldowns on Cosmic Smash, whichever has waited longest; fire-only ones (Aura Mastery) first,
-	-- since they do nothing for the tank, and Divine Guardian (which also covers the tank) only where none is free
-	for _, hit in ipairs(CP.SmashTimes(from + RAID_LEAD_MIN, stop)) do
-		local latest, has = hit - RAID_LEAD_MIN, false
-		for _, k in ipairs(keptRaid) do
-			if k[1] <= hit and k[2] > hit then has = true end -- already has one
-		end
-		if not has then
-			local who, cands = holderAt(hit), {}
-			for i, c in ipairs(pool) do
-				if c.raid and free(i, latest) then
-					cands[#cands + 1] = {i = i, k = rng and rng() or nextFree(i, 0) or 0} -- a variation tries them in any order
-				end
-			end
-			table.sort(cands, function(a, b)
-				local A, B = pool[a.i].smashOnly and 0 or 1, pool[b.i].smashOnly and 0 or 1
-				if A ~= B then return A < B end
-				return a.k < b.k
-			end)
-			local placed = false
-			for _, cand in ipairs(cands) do
-				local c, at = pool[cand.i], math.max(hit - RAID_LEAD, from)
-				if not c.smashOnly then
-					local moved = true
-					while moved do -- past every bit of cover the tank already has in the early seconds
-						moved = false
-						for _, f in ipairs(fixed[who] or {}) do
-							if f[1] < latest and f[2] > at and at < latest then at, moved = math.min(latest, f[2]), true end
-						end
-					end
-					if covers(who, at, at + c.dur) then at = nil end -- Divine Guardian never on top of the tank's other cover
-				end
-				if at then
-					while at < latest and not free(cand.i, at) do at = at + 0.5 end
-					if free(cand.i, at) then
-						use(cand.i, at, who, "Cosmic Smash")
-						placed = true
+	-- 2: a variation puts some raid-wide cooldowns (Divine Sacrifice) on the tank with the boss SMASH_LEAD before a
+	-- Cosmic Smash lands, where they fit: cover for the tank that also takes the raid through the smash. The score
+	-- keeps that only where the tanks lose nothing by it.
+	if smashRng then
+		for _, hit in ipairs(CP.SmashTimes(from + SMASH_LEAD, stop)) do
+			if smashRng() < SMASH_TRY then
+				local who, at = holderAt(hit), hit - SMASH_LEAD
+				for i, c in ipairs(pool) do
+					if c.raid and not c.smashOnly and free(i, at) and not covers(who, at, at + c.dur) and not besideRaid(who, at, at + c.dur) then
+						use(i, at, who)
 						break
 					end
 				end
 			end
-			if not placed then smashMissed = smashMissed + 1 end
 		end
 	end
 	-- 3: the rest of each tank's time, the weaker tank's stints first
@@ -443,14 +443,18 @@ local function build(opts, rng)
 				local pick, pickIdle, pickRank, soonest
 				for i, cd in ipairs(pool) do
 					-- only what ends before the next planned cover: cooldowns on one tank never overlap
-					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) and c + cd.dur <= (nextFixed or math.huge) + 0.01 then
+					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) and c + cd.dur <= (nextFixed or math.huge) + 0.01
+						and not (cd.raid and besideRaid(who, c, c + cd.dur)) then
 						if free(i, c) then
 							local last = -math.huge
 							for _, u in ipairs(uses[i]) do if u < c and u > last then last = u end end
 							local idle = rng and rng() or c - last -- a variation tries them in any order
-							-- raid-wide ones are kept for smashes unless nothing else is up; then the tank's own before
-							-- shared ones, which the other tank could have used
+							-- raid-wide ones (6s) only when nothing else is up, unless a Cosmic Smash lands inside them: then
+							-- first, as they cover the raid too (over 49 sample rosters: smashes covered 55 to 78 of 637
+							-- for 0.2s more bare tank time a fight); then the tank's own before shared ones, which the other
+							-- tank could have used
 							local rank = cd.raid and 2 or cd.role == "ext" and 1 or 0
+							if cd.raid and CP.SmashTimes(c + 0.5, c + cd.dur - 0.5)[1] then rank = -1 end
 							if rng and rng() < 0.3 then rank = 0 end -- a variation sometimes spends what it'd normally save
 							-- one still running at the incoming tank's press overlaps it: only when nothing else fits
 							if swapAt and c + cd.dur > swapAt - SWAP_LEAD + 0.01 then rank = rank + 3 end
@@ -487,22 +491,6 @@ local function build(opts, rng)
 			end
 		end
 	end
-	local trinketOnly = 0
-	table.sort(holes, function(a, b) return a[2] < b[2] end)
-	for _, h in ipairs(holes) do
-		local c = h[2]
-		for _, r in ipairs(rows) do -- what a trinket covers of the hole
-			if r.target == h[1] and trinketByPool[r.player .. "\0" .. r.spell] and r.time <= c and r.time + r.dur > c then
-				local to = math.min(h[3], r.time + r.dur)
-				trinketOnly = trinketOnly + to - c
-				c = to
-			end
-		end
-		if c < h[3] then
-			problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(h[3]))
-			uncovered = uncovered + h[3] - c
-		end
-	end
 	for i, c in ipairs(pool) do
 		if c.trinket then
 			local windows = {}
@@ -521,12 +509,39 @@ local function build(opts, rng)
 		end
 	end
 	table.sort(rows, function(a, b) return a.time < b.time end)
+	-- counted from the finished plan, so trinkets paired late still shrink the holes they run into
+	local trinketOnly = 0
+	table.sort(holes, function(a, b) return a[2] < b[2] end)
+	for _, h in ipairs(holes) do
+		local c = h[2]
+		for _, r in ipairs(rows) do -- what a trinket covers of the hole
+			if r.target == h[1] and trinketByPool[r.player .. "\0" .. r.spell] and r.time <= c and r.time + r.dur > c then
+				local to = math.min(h[3], r.time + r.dur)
+				trinketOnly = trinketOnly + to - c
+				c = to
+			end
+		end
+		if c < h[3] then
+			problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(h[3]))
+			uncovered = uncovered + h[3] - c
+		end
+	end
+	-- and the smashes landing with no raid-wide cooldown up: last, so it only decides between plans as good for the tanks
+	local smashBare = 0
+	for _, hit in ipairs(CP.SmashTimes(from, stop)) do
+		local has = false
+		for _, r in ipairs(rows) do
+			if raidByPool[r.player .. "\0" .. r.spell] and r.time <= hit and hit < r.time + r.dur then has = true break end
+		end
+		if not has then smashBare = smashBare + 1 end
+	end
 	-- worst first: a swap without its big cooldown, tank time with nothing up, tank time with only a trinket,
-	-- a smash without a raid cooldown
-	return rows, problems, {bigMissed, round(uncovered), round(trinketOnly), smashMissed}
+	-- a smash with no raid-wide cooldown up
+	return rows, problems, {bigMissed, round(uncovered), round(trinketOnly), smashBare}
 end
 
 local TRIES = 40	-- variations tried on top of the plain build, keeping the best
+local SMASH_TRIES = 20	-- and variations that also try raid-wide cooldowns on smashes (step 2), on their own random numbers
 local function better(a, b)
 	for i = 1, #a do
 		if a[i] ~= b[i] then return a[i] < b[i] end
@@ -534,19 +549,23 @@ local function better(a, b)
 	return false
 end
 
--- The plain build and TRIES variations of it; the best by build's score wins, the plainest of equals.
--- Seeded, so a roster always gives the same plan.
-function CP.Generate(opts, tries)
-	local seed = 12345
-	local function rng()
+-- The plain build and TRIES variations of it, then SMASH_TRIES that also try raid-wide cooldowns on smashes: those
+-- draw their own random numbers, so the first TRIES are the same whatever they find and can only be bettered. The best
+-- by build's score wins, the plainest of equals. Seeded, so a roster always gives the same plan.
+local function seeded(seed)
+	return function()
 		seed = (seed * 1103515245 + 12345) % 2147483648
 		return seed / 2147483648
 	end
-	local best, bestProblems, bestScore
-	for try = 0, tries or TRIES do
-		local rows, problems, score = build(opts, try > 0 and rng or nil)
+end
+function CP.Generate(opts, tries)
+	local rng, smashRng, best, bestProblems, bestScore = seeded(12345), seeded(54321)
+	local function try(r, s)
+		local rows, problems, score = build(opts, r, s)
 		if not best or better(score, bestScore) then best, bestProblems, bestScore = rows, problems, score end
 	end
+	for n = 0, tries or TRIES do try(n > 0 and rng or nil) end
+	for _ = 1, tries and math.floor(tries / 2) or SMASH_TRIES do try(rng, smashRng) end
 	return best, bestProblems, bestScore
 end
 
@@ -573,11 +592,15 @@ end
 -- from what will really be ready.
 function CP.Replan(opts)
 	local now, dead, missed = opts.now, opts.dead or {}, opts.missed or {}
-	local keep, covered, last = {}, {}, {}
+	local keep, covered, last, running = {}, {}, {}, {}
+	local trinket = {}
+	for _, c in ipairs(opts.pool) do if c.trinket then trinket[c.player .. "\0" .. c.spell] = true end end
 	local function used(player, spell, t, target, dur)
 		local key = player .. "\0" .. spell
 		if not last[key] or t > last[key] then last[key] = t end
 		if target and dur then covered[target] = math.max(covered[target] or 0, t + dur) end
+		-- still up past the re-plan: real cover the new rows must not land on (a trinket isn't cover)
+		if target and dur and t + dur > now + LOCK and not trinket[key] then running[#running + 1] = {target, t, t + dur} end
 	end
 	for _, u in ipairs(opts.uses) do used(u.player, u.spell, u.time, u.target, u.dur) end
 	for _, r in ipairs(opts.rows) do
@@ -603,6 +626,9 @@ function CP.Replan(opts)
 	for _, t in ipairs(opts.swaps or CP.SwapTimes(now, opts.stop or FIGHT)) do
 		if t <= from then tank = tank % #opts.tanks + 1 else swaps[#swaps + 1] = t end -- a swap inside the lock
 	end
+	local alive = 0
+	for _, t in ipairs(opts.tanks) do if not dead[t] then alive = alive + 1 end end
+	if alive < 2 then swaps = {} end -- one tank left keeps the boss: no one to swap with
 	local readyAt = {}
 	for _, c in ipairs(pool) do readyAt[c.player .. "\0" .. c.spell] = c.readyAt end
 	local carry = {}
@@ -626,7 +652,7 @@ function CP.Replan(opts)
 		if t == holder and not dead[t] then tank = #tanks end
 	end
 	if dead[holder] then tank = 1 end -- the other tank has it now
-	local rows, problems = CP.Generate({pool = pool, tanks = tanks, tank = tank, covered = covered, from = from, stop = opts.stop, swaps = swaps, keep = carry, weaker = opts.weaker})
+	local rows, problems = CP.Generate({pool = pool, tanks = tanks, tank = tank, covered = covered, running = running, from = from, stop = opts.stop, swaps = swaps, keep = carry, weaker = opts.weaker})
 	for _, r in ipairs(keep) do rows[#rows + 1] = r end
 	table.sort(rows, function(a, b) return a.time < b.time end)
 	return rows, problems
@@ -745,27 +771,30 @@ end
 
 -- The timeline strip from fight time t for span seconds: one tank lane showing whoever has the boss (the
 -- incoming tank's cover from their press, the outgoing tank's cut off there), a tag naming the tank at each
--- handover, a raid lane with raid-wide cooldowns (only there, though Divine Guardian also covers the tank:
--- it keeps the tank lane to what's specific to the tank), Cosmic Smash impacts and swaps (taunts). A hole
--- is just empty lane. Blocks keep their real start and end past the view's edges: the strip clips them, so
--- one slides out under the now line instead of shrinking.
--- {lanes = {{name = "Tank", blocks = {{from, to, row}}, tags = {{time, name}}}, {name = "Raid", blocks}},
---  smashes, swaps, lastSwap = {time, from, to, number} (the latest swap at or before t)}
+-- handover (Divine Sacrifice on a tank shows there too), an AoE lane with the raid's damage to come: each
+-- Cosmic Smash and Big Bang landing (smashes, bangs: landing times, from a cast back so a cast's ramp sliding
+-- in is there), plus any raid-wide cooldown with no tank (a hand-written Aura Mastery), and swaps (taunts). A
+-- hole is just empty lane. Blocks keep their real start and end past the view's edges: the strip clips them,
+-- so one slides out under the now line instead of shrinking.
+-- {lanes = {{name = "Tank", blocks = {{from, to, row}}, tags = {{time, name}}}, {name = "AoE", blocks}},
+--  smashes, bangs, swaps, lastSwap = {time, from, to, number} (the latest swap at or before t)}
 function CP.Strip(rows, period, t, span, isRaid)
 	local stop = t + span
-	local tank, raid = {name = "Tank", blocks = {}, tags = {}}, {name = "Raid", blocks = {}}
-	local strip = {lanes = {tank, raid}, smashes = CP.SmashTimes(t, stop), swaps = {}}
+	local tank, aoe = {name = "Tank", blocks = {}, tags = {}}, {name = "AoE", blocks = {}}
+	local strip = {lanes = {tank, aoe}, smashes = CP.SmashTimes(t - SMASH_LANDS, stop + SMASH_LANDS),
+		bangs = CP.BangTimes(t - SMASH_LANDS, stop + BANG_LANDS), swaps = {}}
 	local uses = {}	-- every use in view, by target
 	local taunts = {}
 	for _, r in ipairs(rows) do
 		local dur = r.dur or CP.Info(r.player, r.spell) or 0
 		local due = CP.NextUse(r, period, t - dur)
 		while due < stop and due + dur > t do
-			if r.target and not isRaid(r.spell) then
+			if r.target then
 				uses[r.target] = uses[r.target] or {}
 				table.insert(uses[r.target], {from = due, to = due + dur, row = r})
+			elseif isRaid(r.spell) then
+				table.insert(aoe.blocks, {from = due, to = due + dur, row = r})
 			end
-			if isRaid(r.spell) then table.insert(raid.blocks, {from = due, to = due + dur, row = r}) end
 			if not period then break end
 			due = due + period
 		end
@@ -846,6 +875,30 @@ local tracked = {}
 local function send(msg)
 	local channel = GetNumRaidMembers() > 0 and "RAID" or GetNumPartyMembers() > 0 and "PARTY"
 	if channel then SendAddonMessage(PREFIX, msg, channel) end
+end
+
+local MSG_MAX = 254 - #PREFIX	-- the server drops an addon message past 255 bytes: prefix, a tab, then the text
+
+-- A plan's lines as L messages under one send id, or nil and the lines too long to send whole: as an L line,
+-- or later as the U line a re-plan sends for that row (a cut line would leave everyone with a different plan).
+-- The send id goes up with every send (tenths of a second of uptime), so a client can tell a resend from late lines.
+local sentAs = {}	-- [plan id] = the send id it last went out under
+local function planMessages(id, text, sendId)
+	sendId = sendId or math.floor(GetTime() * 10)
+	local lines = {}
+	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+		if line:match("%S") then lines[#lines + 1] = line end
+	end
+	local msgs, long = {}, {}
+	for i, line in ipairs(lines) do
+		msgs[i] = ("L\t%s\t%d\t%d\t%d\t%s"):format(id, sendId, #lines, i, line)
+		local row = CP.Parse(line).rows[1]
+		local u = row and ("U\t99999\t999.999\t999\t999\t%g\t%s\t%s\t%g\t%s\t%s"):format(row.time, row.player, row.spell, row.dur or 999, row.target or "", row.note or "")
+		if #msgs[i] > MSG_MAX or (u and #u > MSG_MAX) then long[#long + 1] = line:sub(1, 40) end
+	end
+	if long[1] then return nil, long end
+	sentAs[id] = sendId
+	return msgs
 end
 
 -- seconds until one of my cooldowns is ready, 0 if it is
@@ -1157,6 +1210,7 @@ local function applyRows(future, from)
 end
 
 local sendSeq = 0
+local update -- the re-plan being received (U messages); each pull starts over, as the sender's numbering may have
 local function replan()
 	if not active or not active.live then return end
 	local t = GetTime() - pullTime
@@ -1204,6 +1258,7 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	pullTime = GetTime() - (delay or 0) + intro
 	wipe(done)
 	fight = {uses = {}, dead = {}, missed = {}}
+	update = nil
 	ticker:Show()
 end)
 -- who a use of mine is on and why it's there
@@ -1316,8 +1371,17 @@ end
 
 -- timeline strip: the next STRIP_SPAN seconds of the plan, on until /dbm cd strip turns it off
 local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H, PAD = 40, 520, 36, 24, 14, 5
-local LANES_TOP = PAD + TAG_H + 1	-- one row for the tank tags and the smash labels, then the lanes
-local TAG_BG = TAG_H + 1.5	-- a tag's colour reaches a little below its text row, near the Tank lane
+local SMASH_COLOR = {1, 0.55, 0.23}	-- Cosmic Smash: its ramp, landing line and name
+local BANG_COLOR, BANG_LINE, BANG_TEXT = {0.59, 0.24, 0.75}, {0.75, 0.43, 1}, {0.84, 0.59, 1}	-- Big Bang: ramp, line, name
+local LANES_TOP = PAD + TAG_H + 1	-- one row for the tank tags, then the lanes
+-- the tags and the AoE lane's ramps reach the border's inner edge (where the lines start too) rather than leaving the
+-- padding dark: a tag up into the top padding, a ramp down into the bottom one
+local BORDER_IN = 3
+local TAG_LIFT, RAMP_DOWN = PAD - BORDER_IN, PAD - BORDER_IN
+-- a tag's colour, from the border down to the top of the Tank lane's blocks: those show about 1.4 units below their
+-- anchor (the lanes' scroll frame; measured on screenshots), so a tag sized to the anchor left a 2px dark band
+local TAG_BG = LANES_TOP + 1 - BORDER_IN + 1
+local TAG_FONT = 12
 -- short names, so a block's label fits it
 local STRIP_SHORT = {
 	[48792] = "Icebound", [498] = "Div Prot", [871] = "Shield Wall", [61336] = "Surv Inst", [55233] = "Vamp Blood",
@@ -1408,10 +1472,10 @@ function showStrip(rows, period, t, hasTanks)
 		-- smash and swap lines go just above them, the tags above those
 		strip.laneClip = CreateFrame("ScrollFrame", nil, strip)
 		strip.laneClip:SetPoint("TOPLEFT", LABEL_W + PAD + 2, -LANES_TOP)
-		strip.laneClip:SetSize(STRIP_W + 2, 2 * LANE_H)
+		strip.laneClip:SetSize(STRIP_W + 2, 2 * LANE_H + RAMP_DOWN)
 		strip.laneClip:SetFrameLevel(strip:GetFrameLevel() + 1)
 		strip.laneRow = CreateFrame("Frame", nil, strip.laneClip)
-		strip.laneRow:SetSize(STRIP_W + 2, 2 * LANE_H)
+		strip.laneRow:SetSize(STRIP_W + 2, 2 * LANE_H + RAMP_DOWN)
 		strip.laneClip:SetScrollChild(strip.laneRow)
 		-- trinkets on their own layer under the other cooldowns (each block's subtree is three levels deep), so
 		-- one overlapping a cooldown is always the one hidden, never drawn in whatever order the pool gives
@@ -1421,6 +1485,7 @@ function showStrip(rows, period, t, hasTanks)
 		strip.laneHigh:SetAllPoints()
 		strip.laneHigh:SetFrameLevel(strip.laneLow:GetFrameLevel() + 4)
 		strip.trinkets = {used = 0}
+		strip.ramps = {used = 0}	-- {ramp texture, label} per Cosmic Smash or Big Bang in view
 		strip.lineLayer = CreateFrame("Frame", nil, strip)
 		strip.lineLayer:SetAllPoints()
 		strip.lineLayer:SetFrameLevel(strip.laneHigh:GetFrameLevel() + 4) -- above the cooldowns' subtrees
@@ -1432,7 +1497,6 @@ function showStrip(rows, period, t, hasTanks)
 	end
 	-- worked out a second further than shown, so what slides in before the next update is already there
 	strip.s = CP.Strip(rows, period, t, STRIP_SPAN + 1, function(spell) return raidByName[spell] end)
-	strip.s.smashLabels = CP.SmashTimes(t - 5, t + STRIP_SPAN + 1) -- and the ones whose label is still sliding out
 	drawStrip(t)
 	strip:Show()
 end
@@ -1445,6 +1509,8 @@ function drawStrip(t)
 		for i = 1, list.used do list[i]:Hide() end
 		list.used = 0
 	end
+	for i = 1, strip.ramps.used do strip.ramps[i].tex:Hide() strip.ramps[i].text:Hide() end
+	strip.ramps.used = 0
 	local x0 = LABEL_W + PAD + 2
 	-- everything moves by one shift, in whole screen pixels: placed and rounded one by one, a bar and its label
 	-- round at different moments and wobble against each other
@@ -1493,8 +1559,36 @@ function drawStrip(t)
 			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, 0.9, label, r.player == playerName, trinketByName[r.spell])
 		end
 	end
+	-- the AoE lane: each Cosmic Smash and Big Bang cast filling in toward where it lands, its name after the line
+	-- there; the ramp and name slide out under the now line like a cooldown does
+	local function ramp(land, cast, color, textColor, name)
+		local p = strip.ramps[strip.ramps.used + 1]
+		if not p then
+			p = {tex = strip.laneLow:CreateTexture(nil, "ARTWORK"), text = strip.laneLow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")}
+			p.tex:SetTexture(1, 1, 1, 1)
+			p.text:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+			strip.ramps[strip.ramps.used + 1] = p
+		end
+		strip.ramps.used = strip.ramps.used + 1
+		local left, right = x(land - cast), x(land)
+		p.tex:ClearAllPoints()
+		p.tex:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", left - x0, -LANE_H - 1)
+		p.tex:SetSize(math.max(1, right - left), LANE_H - 1 + RAMP_DOWN)
+		p.tex:SetGradientAlpha("HORIZONTAL", color[1], color[2], color[3], 0, color[1], color[2], color[3], 0.85)
+		p.tex:Show()
+		p.text:SetText(name)
+		p.text:SetTextColor(textColor[1], textColor[2], textColor[3])
+		p.text:ClearAllPoints()
+		p.text:SetPoint("LEFT", strip.laneRow, "TOPLEFT", right - x0 + 2, -LANE_H - (LANE_H + RAMP_DOWN) / 2) -- centred in the ramp
+		p.text:Show()
+	end
 	for _, h in ipairs(s.smashes) do
-		if h >= t and h < stop then line(h, 1, 0.55, 0.23) end
+		ramp(h, CP.SMASH_CAST, SMASH_COLOR, SMASH_COLOR, "Smash")
+		if h >= t and h < stop then line(h, SMASH_COLOR[1], SMASH_COLOR[2], SMASH_COLOR[3]) end
+	end
+	for _, h in ipairs(s.bangs) do
+		ramp(h, CP.BANG_CAST, BANG_COLOR, BANG_TEXT, "Big Bang")
+		if h >= t and h < stop then line(h, BANG_LINE[1], BANG_LINE[2], BANG_LINE[3]) end
 	end
 	for _, w in ipairs(s.swaps) do
 		if w > t and w < stop then line(w, 1, 0.82, 0, true) end
@@ -1507,7 +1601,7 @@ function drawStrip(t)
 		-- a plain frame, not a scroll frame: a tag's colour moving inside a scroll frame drew 2px past its own
 		-- bottom, and snapped back when it stopped
 		strip.tagRow = CreateFrame("Frame", nil, strip)
-		strip.tagRow:SetPoint("TOPLEFT", x0, -PAD)
+		strip.tagRow:SetPoint("TOPLEFT", x0, -PAD + TAG_LIFT)
 		strip.tagRow:SetSize(STRIP_W + 2, TAG_BG)
 		strip.tagRow:SetFrameLevel(strip.lineLayer:GetFrameLevel() + 1)
 		strip.top = CreateFrame("Frame", nil, strip)
@@ -1552,7 +1646,7 @@ function drawStrip(t)
 			p.child:SetSize(400, TAG_BG)
 			p.clip:SetScrollChild(p.child)
 			p.text = p.child:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-			p.text:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+			p.text:SetFont(STANDARD_TEXT_FONT, TAG_FONT, "OUTLINE")
 			strip.tagFrames[number] = p
 		end
 		local cc = classColor(name) or {r = 0.6, g = 0.6, b = 0.7}
@@ -1566,13 +1660,13 @@ function drawStrip(t)
 		p:SetPoint("TOPLEFT", left, 0)
 		p:SetSize(math.max(1, right - left), TAG_BG)
 		p.text:ClearAllPoints()
-		p.text:SetPoint("LEFT", p.child, "TOPLEFT", px + 3 - left, -TAG_H / 2) -- centred on the text row
+		p.text:SetPoint("LEFT", p.child, "TOPLEFT", px + 3 - left, -TAG_BG / 2) -- centred in the tag
 		if right - left >= 1 then p:Show() end -- not yet in from the right
 		return px + w
 	end
 	if not strip.prefix then -- how much of a tag is "Swap · ", to know when it has slid out of sight
 		strip.prefix = strip.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		strip.prefix:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+		strip.prefix:SetFont(STANDARD_TEXT_FONT, TAG_FONT, "OUTLINE")
 		strip.prefix:Hide()
 		strip.tagFrames = {}
 	end
@@ -1586,70 +1680,21 @@ function drawStrip(t)
 		return -(full - strip.prefix:GetStringWidth())
 	end
 	for _, p in pairs(strip.tagFrames) do p:Hide() end
-	local taken = {}
 	-- the current tank's tag: the latest swap's, stopped where its "Swap · " has gone under the now line, or the
 	-- pull's; while that swap's tag is still sliding in, the one it covers stays under it
 	local last, first = s.lastSwap, s.lanes[1].tags[1]
-	strip.pinRight = 0
 	if last then
 		local settled = settledFor(last.to)
 		local px = math.max(x(last.time) - x0 + 2, settled)
-		strip.pinRight = tag(last.number, last.to, px, true)
+		tag(last.number, last.to, px, true)
 		if px > settled then
 			if last.number > 1 then tag(last.number - 1, last.from, settledFor(last.from), true) else tag(0, last.from, 0, false) end
-			taken[#taken + 1] = {x0 + px, x0 + strip.pinRight}
 		end
 	elseif first then
-		strip.pinRight = tag(0, first.name, 0, false)
+		tag(0, first.name, 0, false)
 	end
 	for i, tg in ipairs(s.lanes[1].tags) do
-		if i > 1 then
-			local px = x(tg.time) - x0 + 2
-			taken[#taken + 1] = {x0 + px, x0 + tag(tg.number, tg.name, px, true)}
-		end
-	end
-	for _, w in ipairs(s.swaps) do
-		if w > t and w < stop then taken[#taken + 1] = {x(w) - 1, x(w) + 3} end -- the swap line too
-	end
-	-- "Smash" beside its line, unless a swap's tag or line is in the way: the smash is usually covered anyway,
-	-- and its line stays. It slides in at the right edge and out under the pinned tag: clipped from the tag's
-	-- right edge rather than layered under it, so a label reaching it is cut where the tag begins
-	if not strip.smashClip then
-		strip.smashClip = CreateFrame("ScrollFrame", nil, strip)
-		strip.smashClip:SetFrameLevel(strip.lineLayer:GetFrameLevel())
-		strip.smashRow = CreateFrame("Frame", nil, strip.smashClip)
-		strip.smashRow:SetSize(STRIP_W + 2, TAG_H)
-		strip.smashClip:SetScrollChild(strip.smashRow)
-		strip.smashLabels = {}
-	end
-	local cut = math.max(0, strip.pinRight)
-	strip.smashClip:ClearAllPoints()
-	strip.smashClip:SetPoint("TOPLEFT", x0 + cut, -PAD)
-	strip.smashClip:SetSize(STRIP_W + 2 - cut, TAG_H)
-	for _, f in ipairs(strip.smashLabels) do f:Hide() end
-	local m = 0
-	for _, h in ipairs(s.smashLabels) do
-		local from = x(h) + 3
-		if from < x0 + STRIP_W + 2 then
-			m = m + 1
-			local f = strip.smashLabels[m]
-			if not f then
-				f = strip.smashRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-				f:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
-				f:SetTextColor(1, 0.55, 0.23)
-				f:SetText("Smash")
-				strip.smashLabels[m] = f
-			end
-			local w, clear = f:GetStringWidth() + 6, true
-			for _, span in ipairs(taken) do
-				if from < span[2] and from + w > span[1] then clear = false end
-			end
-			if clear then
-				f:ClearAllPoints()
-				f:SetPoint("LEFT", strip.smashRow, "LEFT", from - x0 - cut, 0)
-				f:Show()
-			end
-		end
+		if i > 1 then tag(tg.number, tg.name, x(tg.time) - x0 + 2, true) end
 	end
 end
 
@@ -1742,9 +1787,26 @@ end)
 DBM:RegisterCallback("DBM_Kill", stop)
 DBM:RegisterCallback("DBM_Wipe", stop)
 
--- comms: P = plan line, Q = ask everyone for their CDs, C = one CD's duration and cooldown,
--- U = the plan's sender re-planned the rest of the fight, W = a hole it couldn't fill
-local incoming, update = {}, nil
+-- comms: L = plan line, Q = ask everyone for their CDs, C = one CD's duration and cooldown,
+-- U = the plan's sender re-planned the rest of the fight, W = a hole it couldn't fill,
+-- R = a plan arrived with lines missing (zoning mid-send): its sender whispers it again
+local incoming = {}
+local received = {}	-- [sender .. "\0" .. plan id] = the last send of it received whole
+local ASK_AFTER, ASK_TRIES = 3, 2	-- a plan still missing lines this long after the last one asks again, this many times
+
+local function askMissing(sender, id)
+	local inc = incoming[sender]
+	if not inc or inc.id ~= id then return end -- complete, or a newer plan
+	if GetTime() - inc.last < ASK_AFTER then
+		DBM:Schedule(ASK_AFTER, askMissing, sender, id)
+	elseif inc.asked < ASK_TRIES then
+		inc.asked, inc.last = inc.asked + 1, GetTime()
+		SendAddonMessage(PREFIX, "R\t" .. id, "WHISPER", sender)
+		DBM:Schedule(ASK_AFTER, askMissing, sender, id)
+	else
+		incoming[sender] = nil
+	end
+end
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("CHAT_MSG_ADDON")
@@ -1780,6 +1842,12 @@ events:SetScript("OnEvent", function(_, event, ...)
 			reported[sender][spell] = {dur = tonumber(dur), cd = tonumber(cd), power = tonumber(power), readyAt = GetTime() + (tonumber(wait) or 0)}
 		elseif kind == "Q" then
 			sendMine()
+		elseif kind == "R" then
+			local id = msg:sub(3)
+			if saved.planFrom[id] == playerName and saved.plans[id] then
+				-- under the send's own id when we still know it, so it only fills in what the asker is missing
+				for _, m in ipairs(planMessages(id, saved.plans[id], sentAs[id]) or {}) do SendAddonMessage(PREFIX, m, "WHISPER", sender) end
+			end
 		elseif kind == "U" and active and sender == active.from then
 			local _, seq, from, count, i, time, player, spell, dur, target, note = strsplit("\t", msg)
 			seq, count = tonumber(seq), tonumber(count)
@@ -1794,15 +1862,28 @@ events:SetScript("OnEvent", function(_, event, ...)
 				applyRows(update.rows, update.from)
 				update.got = -1 -- applied
 			end
-		elseif kind == "P" and DBM:GetRaidRank(sender) > 0 then
-			local id, count, i, line = msg:match("^P\t([^\t]+)\t(%d+)\t(%d+)\t(.*)$")
+		elseif kind == "L" and DBM:GetRaidRank(sender) > 0 then
+			local id, sendId, count, i, line = msg:match("^L\t([^\t]+)\t(%d+)\t(%d+)\t(%d+)\t(.*)$")
 			if not id then return end
+			sendId = tonumber(sendId)
+			-- each send has its own id: a newer send starts over, so a resend is never finished by an older copy's
+			-- lines, and lines of a send already received (or older) are late copies
+			if sendId <= (received[sender .. "\0" .. id] or -1) then return end
 			local inc = incoming[sender]
-			if not inc or inc.id ~= id then inc = {id = id, lines = {}, got = 0} incoming[sender] = inc end
+			if inc and inc.id == id and sendId < inc.send then return end
+			if not inc or inc.id ~= id or sendId > inc.send then
+				inc = {id = id, send = sendId, lines = {}, got = 0, asked = inc and inc.id == id and inc.asked or 0}
+				incoming[sender] = inc
+				DBM:Unschedule(askMissing, sender, id)
+				DBM:Schedule(ASK_AFTER, askMissing, sender, id)
+			end
+			inc.last = GetTime()
 			if not inc.lines[tonumber(i)] then inc.got = inc.got + 1 end
 			inc.lines[tonumber(i)] = line
 			if inc.got == tonumber(count) then
 				incoming[sender] = nil
+				received[sender .. "\0" .. id] = sendId
+				DBM:Unschedule(askMissing, sender, id)
 				local text = table.concat(inc.lines, "\n")
 				saved.plans[id] = text
 				saved.planFrom[id] = sender
@@ -1814,7 +1895,10 @@ events:SetScript("OnEvent", function(_, event, ...)
 		end
 	else
 		local _, sub, sourceGUID, sourceName, _, destGUID, destName, _, spellId, spell = ...
-		if active and not active.live and sub == "SPELL_CAST_SUCCESS" and sourceName == playerName and tracked[spell] then
+		-- one of the caster's own cooldowns put on someone else (a threat Hand of Salvation) isn't the planned use,
+		-- though its cooldown is gone all the same
+		local offSelf = tracked[spell] and roleByName[spell] ~= "ext" and destName and destName ~= sourceName
+		if active and not active.live and sub == "SPELL_CAST_SUCCESS" and sourceName == playerName and tracked[spell] and not offSelf then
 			local i = CP.Match(active.rows, {player = sourceName, spell = spell, time = GetTime() - pullTime})
 			if i then active.rows[i].done = true end
 		end
@@ -1840,9 +1924,9 @@ events:SetScript("OnEvent", function(_, event, ...)
 			elseif sub == "SPELL_CAST_SUCCESS" and tracked[spell] and sourceName then
 				local use = {player = sourceName, spell = spell, time = GetTime() - pullTime, dur = (CP.Info(sourceName, spell))}
 				-- Divine Sacrifice has no target: it covers whoever has the boss
-				use.target = not smashOnlyByName[spell] and (roleByName[spell] == "ext" and (destName or fight.holder) or sourceName) or nil
+				use.target = not smashOnlyByName[spell] and not offSelf and (roleByName[spell] == "ext" and (destName or fight.holder) or sourceName) or nil
 				fight.uses[#fight.uses + 1] = use
-				local i = CP.Match(active.rows, use)
+				local i = not offSelf and CP.Match(active.rows, use)
 				if i then
 					active.rows[i].done = true
 				else
@@ -1882,18 +1966,6 @@ local function report(id)
 	local issues = CP.Check(plan)
 	DBM:AddMsg(("Cooldown plan %s: %d uses%s, %s."):format(id, #plan.rows, plan.period and (", loops every " .. plan.period .. "s") or "", #issues == 0 and "no problems" or (#issues .. " problems")))
 	for _, issue in ipairs(issues) do DBM:AddMsg("  " .. issue) end
-	if not plan.period then
-		local smashes, covered = CP.SmashTimes(0, FIGHT), 0
-		for _, hit in ipairs(smashes) do
-			for _, r in ipairs(plan.rows) do
-				if raidByName[r.spell] and r.time <= hit and r.time + (r.dur or CP.Info(r.player, r.spell) or 0) > hit then
-					covered = covered + 1
-					break
-				end
-			end
-		end
-		DBM:AddMsg(("  Cosmic Smash: %d of %d have a raid cooldown up when they land."):format(covered, #smashes))
-	end
 end
 
 local function generate()
@@ -1963,16 +2035,17 @@ local function createEditor()
 			return
 		end
 		local text = editBox:GetText()
+		local msgs, long = planMessages(editing, text)
+		if not msgs then
+			DBM:AddMsg("Cooldown plan not sent, these lines are too long (shorten their notes): " .. table.concat(long, "; "))
+			return
+		end
 		saved.plans[editing] = text
 		saved.planFrom[editing] = playerName
 		saved.lastPlan = editing
 		track(text)
 		tellMine(editing)
-		local lines = {}
-		for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-			if line:match("%S") then lines[#lines + 1] = line:sub(1, 200) end
-		end
-		for i, line in ipairs(lines) do send(("P\t%s\t%d\t%d\t%s"):format(editing, #lines, i, line)) end
+		for _, m in ipairs(msgs) do send(m) end
 		send("Q")
 		DBM:AddMsg("Cooldown plan sent; checking against everyone's cooldowns in 3s.")
 		DBM:Schedule(3, report, editing)
