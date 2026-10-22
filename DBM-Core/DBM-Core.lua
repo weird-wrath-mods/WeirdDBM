@@ -7131,7 +7131,7 @@ end
 function bossModPrototype:UnregisterOnUpdateHandler()
 	self.elapsed = nil
 	self.updateInterval = nil
-	twipe(private.updateFunctions)
+	private.updateFunctions[self] = nil -- only ours: another fight may still be running its own
 end
 
 function bossModPrototype:SetStage(stage)
