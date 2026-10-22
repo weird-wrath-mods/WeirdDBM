@@ -1370,7 +1370,8 @@ function showCard(rows, period, t, prepull)
 end
 
 -- timeline strip: the next STRIP_SPAN seconds of the plan, on until /dbm cd strip turns it off
-local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H, PAD = 40, 520, 36, 24, 14, 5
+local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H, PAD = 30, 390, 29, 24, 14, 5	-- 13 units a second
+local NAME_X = 4	-- the lane names' left edge: about 4 units clear of the border, and the column ends about 2 past "Tank"
 local SMASH_COLOR = {1, 0.55, 0.23}	-- Cosmic Smash: its ramp, landing line and name
 local BANG_COLOR, BANG_LINE, BANG_TEXT = {0.59, 0.24, 0.75}, {0.75, 0.43, 1}, {0.84, 0.59, 1}	-- Big Bang: ramp, line, name
 local LANES_TOP = PAD + TAG_H + 1	-- one row for the tank tags, then the lanes
@@ -1465,7 +1466,7 @@ function showStrip(rows, period, t, hasTanks)
 		for i = 1, 2 do
 			strip.names[i] = strip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 			strip.names[i]:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
-			strip.names[i]:SetPoint("LEFT", strip, "TOPLEFT", PAD + 2, -LANES_TOP - (i - 1) * LANE_H - LANE_H / 2)
+			strip.names[i]:SetPoint("LEFT", strip, "TOPLEFT", NAME_X, -LANES_TOP - (i - 1) * LANE_H - LANE_H / 2)
 		end
 		-- the lanes are clipped from the now line on, so a cooldown running out slides away under it whole,
 		-- border and label, rather than shrinking to a stub; its blocks reach to about level +5, so the
