@@ -1146,7 +1146,8 @@ local function liveDeath(name)
 end
 
 local elapsed = 0
-ticker:SetScript("OnUpdate", function(_, e)
+local function step(e)
+	if not active then ticker:Hide() return end
 	elapsed = elapsed + e
 	if elapsed < 0.2 then -- between the stepped work, the timeline still slides every frame
 		if strip and strip:IsShown() and strip.s then drawStrip(GetTime() - pullTime) end
@@ -1159,6 +1160,12 @@ ticker:SetScript("OnUpdate", function(_, e)
 	end
 	local now = GetTime()
 	local t = now - pullTime
+	if active.aoeOnly then -- the raid's AoE and the swaps only: no plan, no card
+		if t > FIGHT + 10 then stop() return end -- the kill or wipe should have stopped it
+		if card then card:Hide() end
+		showStrip(active.rows, nil, t, true)
+		return
+	end
 	if active.live then
 		for name in pairs(fight.dead) do -- battle rez or soulstone: back in the plan
 			local unit = DBM:GetRaidUnitId(name)
@@ -1205,7 +1212,17 @@ ticker:SetScript("OnUpdate", function(_, e)
 		end
 	end
 	showCard(cardRows(active.rows), active.period, t)
-	showStrip(active.rows, active.period, t, active.aoeOnly or planTanks(active.rows) ~= nil)
+	showStrip(active.rows, active.period, t, planTanks(active.rows) ~= nil)
+end
+-- an error here would come back every frame: say the first one and keep going, so a fault in one part (the
+-- card, a re-plan) can't take the timeline down with it
+local stepFailed
+ticker:SetScript("OnUpdate", function(_, e)
+	local ok, err = pcall(step, e)
+	if not ok and not stepFailed then
+		stepFailed = true
+		geterrorhandler()(err)
+	end
 end)
 
 function stop()
@@ -1713,7 +1730,7 @@ function drawStrip(t)
 			-- who presses it, unless it's the tank's own; cut at the block's edge when it doesn't fit
 			local label = shortByName[r.spell] or r.spell
 			if r.player ~= r.target or raidByName[r.spell] then label = label .. " |cffe6e6e6\194\183 " .. r.player .. "|r" end
-			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, b.bare and 0 or 0.9, label, r.player == playerName, trinketByName[r.spell], b.bare and 0.4)
+			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, b.bare and 0 or 0.9, label, r.player == playerName, trinketByName[r.spell], b.bare and 0.2)
 		end
 	end
 	-- the AoE lane: each Cosmic Smash and Big Bang cast filling in toward where it lands, its name after the line
@@ -1858,6 +1875,7 @@ end
 
 -- what I'm down for in a plan, so nobody learns it from the first warning sign
 local function tellMine(id)
+	if AOE_ONLY then return end -- no cooldowns shown while tank planning is off
 	local text = saved.plans[id]
 	if not text or not DBM.Options.CooldownPlanEnabled then return end
 	local list = {}
