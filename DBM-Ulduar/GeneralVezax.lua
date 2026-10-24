@@ -137,10 +137,9 @@ function mod:SPELL_CAST_START(args)
 	local spellId = args.spellId
 	if CAST_TIME[spellId] then castEnd = GetTime() + CAST_TIME[spellId] end
 	if spellId == 62661 then	-- Searing Flames
-		self.vb.interruptCount = self.vb.interruptCount + 1
-		if self.vb.interruptCount == 4 then
-			self.vb.interruptCount = 1
-		end
+		-- 10-man has the interrupters for two kick groups, 25-man rotates three
+		local groups = self:IsDifficulty("normal10") and 2 or 3
+		self.vb.interruptCount = self.vb.interruptCount % groups + 1
 		local kickCount = self.vb.interruptCount
 		specWarnSearingFlames:Show(args.sourceName, kickCount)
 		specWarnSearingFlames:Play("kick"..kickCount.."r")

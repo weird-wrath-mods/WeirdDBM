@@ -431,20 +431,22 @@ local function trimForPhase3()
 	DBM.BossHealth:Hide()
 end
 
-mod:RegisterOnUpdateHandler(function(self)
+-- registered per pull: EndCombat drops it
+local function onUpdate(self)
 	-- reading and sharing run with the frame off too, so a player who hides it still feeds the raid
 	if not self:IsInCombat() or self.vb.phase < 2 then return end
 	local now = GetTime()
 	readAllObserved()
 	if now - lastObservedSync >= OBSERVED_SYNC_EVERY then sendObserved(now) end
 	if self.Options.HealthFrame and self.vb.phase == 3 and DBM.BossHealth:IsShown() then trimForPhase3() end
-end, 0.5)
+end
 
 function mod:OnCombatStart()
 	self:SetStage(1)
 	table.wipe(observed)
 	table.wipe(crusherRows)
 	brainGUID, brainBar, lastObservedSync = nil, nil, 0
+	self:RegisterOnUpdateHandler(onUpdate, 0.5)
 	self.vb.brainLinkIcon = 2
 	self.vb.beaconIcon = 8
 	self.vb.Guardians = 0

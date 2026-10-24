@@ -180,6 +180,7 @@ L.VERSIONCHECK_ENTRY_TWO				= "%s: %s (%s) & %s (%s)"--Two Boss mods
 L.VERSIONCHECK_ENTRY_NO_DBM				= "%s: No boss mod installed"
 L.VERSIONCHECK_FOOTER					= "Found %d player(s) with " .. L.DBM .. " & %d player(s) with Bigwigs"
 L.VERSIONCHECK_OUTDATED					= "Following %d player(s) have outdated boss mod version: %s"
+L.VERSIONCHECK_OTHER_DBM				= "Following %d player(s) run a " .. L.DBM .. " other than WeirdDBM: %s"
 L.YOUR_VERSION_OUTDATED					= "Your version of " .. L.DEADLY_BOSS_MODS .. " is out-of-date. Please visit " .. L.UPDATEREMINDER_URL .. " to get the latest version."
 L.VOICE_PACK_OUTDATED					= "Your selected " .. L.DBM .. " voice pack is missing some sounds supported by " .. L.DBM .. ". Some warning sounds will still play default sounds. Please download a newer version of voice pack or contact pack author for an update that contains missing audio"
 L.VOICE_MISSING							= "You have a " .. L.DBM .. " voice pack selected that could not be found. If this is an error, make sure your voice pack is properly installed and enabled in addons."

@@ -82,14 +82,20 @@ local function currentFullDate()
 end
 
 DBM = {
-	Revision = parseCurseDate("20261020000000"), -- keep in step with ReleaseRevision; if it lags, same-build clients nag each other as out of date
+	Revision = parseCurseDate("20261022000000"), -- keep in step with ReleaseRevision; if it lags, same-build clients nag each other as out of date
 	DisplayVersion = GetAddOnMetadata("DBM-Core", "Version") or "<unknown version>", -- read from the TOC ## Version (single source of truth)
-	ReleaseRevision = releaseDate(2026, 10, 20) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
+	ReleaseRevision = releaseDate(2026, 10, 22) -- the date of the latest stable version that is available, optionally pass hours, minutes, and seconds for multiple releases in one day
 }
 
 local fakeBWVersion = 7558
 local bwVersionResponseString = "%d"
 DBM.HighestRelease = DBM.ReleaseRevision --Updated if newer version is detected, used by update nags to reflect critical fixes user is missing on boss pulls
+
+-- DBM-CC and other forks share the DBMv4 prefix and date-based revisions, so every version comparison (update
+-- prompt, outdated lists, hotfix notices) only counts WeirdDBM builds, whose display version ends in " wv"
+local function isWeirdBuild(displayVersion)
+	return type(displayVersion) == "string" and displayVersion:find(" wv$") ~= nil
+end
 
 -- support for github downloads, which doesn't support curse keyword expansion
 -- just use the latest release revision
@@ -1762,7 +1768,7 @@ do
 				if self.Options.ShowAllVersions then
 					self:AddMsg(L.VERSIONCHECK_ENTRY:format(name, L.DBM.." "..v.displayVersion, showRealDate(v.revision), v.VPVersion or ""), false)--Only display VP version if not running two mods
 				end
-				if notify and v.revision < self.ReleaseRevision then
+				if notify and isWeirdBuild(v.displayVersion) and v.revision < self.ReleaseRevision then
 					DBM:Schedule(nreq*10, SendChatMessage, chatPrefixShort..L.YOUR_VERSION_OUTDATED, "WHISPER", nil, v.name)
 					nreq = nreq + 1
 				end
@@ -1779,6 +1785,13 @@ do
 		local NoDBM = 0
 		local NoBigwigs = 0
 		local OldMod = 0
+		local otherDBMUsers = {}
+		local newestWeird = 0
+		for _, v in ipairs(sortMe) do
+			if isWeirdBuild(v.displayVersion) and v.version > newestWeird then
+				newestWeird = v.version
+			end
+		end
 		for i = #sortMe, 1, -1 do
 			if not sortMe[i].revision then
 				NoDBM = NoDBM + 1
@@ -1786,22 +1799,28 @@ do
 			if not (sortMe[i].bwversion) then
 				NoBigwigs = NoBigwigs + 1
 			end
-			--Table sorting sorts dbm to top, bigwigs underneath. Highest version dbm always at top. so sortMe[1]
-			--This check compares all dbm version to highest RELEASE version in raid.
-			if sortMe[i].revision and (sortMe[i].revision < sortMe[1].version) or sortMe[i].bwversion and (sortMe[i].bwversion < fakeBWVersion) then
-				OldMod = OldMod + 1
-				local name = sortMe[i].name
-				local playerColor = RAID_CLASS_COLORS[DBM:GetRaidClass(name)]
-				if playerColor then
-					name = ("|r|cff%.2x%.2x%.2x%s|r|cff%.2x%.2x%.2x"):format(playerColor.r * 255, playerColor.g * 255, playerColor.b * 255, name, 0.41 * 255, 0.8 * 255, 0.94 * 255)
+			local name = sortMe[i].name
+			local playerColor = RAID_CLASS_COLORS[DBM:GetRaidClass(name)]
+			if playerColor then
+				name = ("|r|cff%.2x%.2x%.2x%s|r|cff%.2x%.2x%.2x"):format(playerColor.r * 255, playerColor.g * 255, playerColor.b * 255, name, 0.41 * 255, 0.8 * 255, 0.94 * 255)
+			end
+			--Compares each WeirdDBM user to the highest WeirdDBM release in the raid; other DBM builds are listed, never outdated
+			if isWeirdBuild(sortMe[i].displayVersion) then
+				if sortMe[i].revision < newestWeird then
+					OldMod = OldMod + 1
+					tinsert(outdatedUsers, name)
 				end
-				tinsert(outdatedUsers, name)
+			elseif sortMe[i].displayVersion then
+				tinsert(otherDBMUsers, name .. " (" .. sortMe[i].displayVersion .. ")")
 			end
 		end
 		local TotalUsers = #sortMe
 		self:AddMsg("---", false)
 		self:AddMsg(L.VERSIONCHECK_FOOTER:format(TotalUsers - NoDBM, TotalUsers - NoBigwigs), false)
 		self:AddMsg(L.VERSIONCHECK_OUTDATED:format(OldMod, #outdatedUsers > 0 and tconcat(outdatedUsers, ", ") or NONE), false)
+		if #otherDBMUsers > 0 then
+			self:AddMsg(L.VERSIONCHECK_OTHER_DBM:format(#otherDBMUsers, tconcat(otherDBMUsers, ", ")), false)
+		end
 	end
 end
 
@@ -2441,7 +2460,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 12
+local WEIRD_DEFAULT_REV = 14
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2511,6 +2530,14 @@ local weirdDefaultMigrations = {
 	[12] = {
 		-- Vezax Surge of Darkness bars (next and active) default OFF
 		GeneralVezax = {"Timer62662cd", "Timer62662active"},
+	},
+	[13] = {
+		-- Thorim: Sif's Frost Nova (next and cast) and Frostbolt Volley bars default OFF
+		Thorim = {"Timer62605cd", "Timer62605cast", "Timer62604cd"},
+	},
+	[14] = {
+		-- Mimiron Heat Wave bar back to its "Healer" default for everyone who clicked it (re-resolves per character again)
+		Mimiron = {"Timer64533cdcount"},
 	},
 }
 
@@ -2582,6 +2609,8 @@ function DBM:LoadModOptions(modId, inCombat, first, profileName, profileID)
 								default = default.value
 							elseif type(default) == "string" then
 								default = mod:GetRoleFlagValue(default)
+								-- a spec-flag default goes back to re-resolving per character on every load, as if never clicked
+								savedOptions[id][profileNum][opt .. "SpecAutoForced"] = nil
 							end
 							if default ~= nil then
 								savedOptions[id][profileNum][opt] = default
@@ -3574,7 +3603,7 @@ do
 				--if dbmRevision < 10481 then return end
 				if mod and delay and (not mod.zones or mod.zones[LastInstanceMapID] or mod.zones[LastInstanceZoneName]) and (not mod.minSyncRevision or modRevision >= mod.minSyncRevision) and not (#inCombat > 0 and mod.noMultiBoss) then
 					DBM:StartCombat(mod, delay + lag, "SYNC from - "..sender, true, startHp, event)
-					if mod.revision < modHFRevision then--mod.revision because we want to compare to OUR revision not senders
+					if mod.revision < modHFRevision and raid[sender] and isWeirdBuild(raid[sender].displayVersion) then--mod.revision because we want to compare to OUR revision not senders
 						--There is a newer RELEASE version of DBM out that has this mods fixes that we do not possess
 						if DBM.HighestRelease >= modHFRevision and DBM.ReleaseRevision < modHFRevision then
 							showConstantReminder = 2
@@ -3945,14 +3974,14 @@ do
 	end
 
 	local function HandleVersion(revision, version, displayVersion, sender)
-		if version > DBM.Revision then -- Update reminder
+		if version > DBM.Revision and isWeirdBuild(displayVersion) then -- Update reminder
 			if version > currentFullDate() then return end -- ignore versions higher than current date to prevent abuse
 			if #newerVersionPerson < 4 then
 				if not checkEntry(newerVersionPerson, sender) then
 					newerVersionPerson[#newerVersionPerson + 1] = sender
 					DBM:Debug("Newer version detected from "..sender.." : Rev - "..revision..", Ver - "..version..", Rev Diff - "..(revision - DBM.Revision), 3)
 				end
-				if #newerVersionPerson == 2 and updateNotificationDisplayed < 2 then--Only requires 2 for update notification.
+				if #newerVersionPerson == 1 and updateNotificationDisplayed < 2 then--One newer WeirdDBM is enough: the " wv" filter above already rules out other forks
 					if DBM.HighestRelease < version then
 						DBM.HighestRelease = version--Increase HighestRelease
 						DBM.NewerVersion = displayVersion--Apply NewerVersion
@@ -7109,7 +7138,7 @@ end
 function bossModPrototype:UnregisterOnUpdateHandler()
 	self.elapsed = nil
 	self.updateInterval = nil
-	twipe(private.updateFunctions)
+	private.updateFunctions[self] = nil -- only ours: another fight may still be running its own
 end
 
 function bossModPrototype:SetStage(stage)

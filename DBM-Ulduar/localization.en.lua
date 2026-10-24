@@ -267,13 +267,15 @@ L:SetWarningLocalization({
 })
 
 L:SetTimerLocalization({
-	TimerHardmode		= "Hard mode"
+	TimerHardmode		= "Hard mode",
+	TimerLightningChargeCast	= "Lightning Charge Cast"
 })
 
 L:SetOptionLocalization({
 	specWarnHardmode	= "Show special announce when Hard mode has activated",
 	TimerHardmode		= "Show timer for hard mode",
-	AnnounceFails		= "Post player fails for $spell:62017 to raid chat<br/>(requires announce to be enabled and leader/promoted status)"
+	AnnounceFails		= "Post player fails for $spell:62017 to raid chat<br/>(requires announce to be enabled and leader/promoted status)",
+	LightningChargeSign	= "Show a warning icon for the 5s wind-up of $spell:62466"
 })
 
 L:SetMiscLocalization({

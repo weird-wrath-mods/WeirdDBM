@@ -532,9 +532,11 @@ function mod:startTimers()
 	enrageTimer:Start(360)
 end
 
+local starUpdate -- registered per pull: EndCombat drops it
 function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	clearStars()
+	self:RegisterOnUpdateHandler(starUpdate, 0.5)
 	starMax = self:IsDifficulty("normal25") and 176400 or 88200
 	playerGUID, phased, lastStarSync, bigBangAt, doomsUntil = UnitGUID("player"), false, 0, nil, nil
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
@@ -675,7 +677,7 @@ function mod:UNIT_SPELLCAST_SUCCEEDED(_, spellName)
 	end
 end
 
-mod:RegisterOnUpdateHandler(function(self)
+function starUpdate(self)
 	if not self:IsInCombat() then return end
 	local now = GetTime()
 	if not starSlots[1] then return end
@@ -696,7 +698,7 @@ mod:RegisterOnUpdateHandler(function(self)
 	end
 	-- ponytail: every DBM client sends every 2s while stars are up; send only on disagreement if traffic matters
 	if now - lastStarSync >= STAR_SYNC_EVERY then sendStarSync(now) end
-end, 0.5)
+end
 local wsWasActive = false
 
 function mod:UPDATE_WORLD_STATES()
