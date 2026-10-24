@@ -1112,6 +1112,39 @@ local function planTanks(rows)
 	return first and second and {first, second}
 end
 
+local function clock(t) return ("%d:%02d"):format(t / 60, t % 60) end
+
+-- a mock fight's scripted misuse, said in chat so it can be matched to what the card and timeline do
+local function sayTest(text)
+	if active and active.test then DBM:AddMsg(("Mock fight %s: %s"):format(clock(GetTime() - pullTime), text)) end
+end
+
+-- a tracked cast while the plan's sender re-plans (a real pull, or a mock fight standing in for one): one that
+-- isn't its planned use and touches the plan (its owner has rows, or it's on a tank) re-plans the rest
+local function liveUse(use, offSelf)
+	fight.uses[#fight.uses + 1] = use
+	local i = not offSelf and CP.Match(active.rows, use)
+	if i then
+		active.rows[i].done = true
+		return
+	end
+	local tanks, matters = planTanks(active.rows), false
+	for _, r in ipairs(active.rows) do
+		if r.player == use.player and r.spell == use.spell then matters = true end
+	end
+	if matters or (tanks and (use.target == tanks[1] or use.target == tanks[2])) then replanSoon() end
+end
+
+local function liveDeath(name)
+	for _, r in ipairs(active.rows) do
+		if (r.player == name or r.target == name) and r.time > GetTime() - pullTime then
+			fight.dead[name] = true
+			replanSoon()
+			return
+		end
+	end
+end
+
 local elapsed = 0
 ticker:SetScript("OnUpdate", function(_, e)
 	elapsed = elapsed + e
@@ -1135,10 +1168,20 @@ ticker:SetScript("OnUpdate", function(_, e)
 			end
 		end
 	end
-	if active.test then -- a mock fight: everyone presses on time, give or take a reaction
+	if active.test then -- a mock fight: everyone presses on time, give or take a reaction, but for its scripted misuse
 		if t > FIGHT then stop() return end
 		for _, row in ipairs(active.rows) do
-			if t >= row.time + TEST_CAST then row.done = true end
+			if not row.done and not row.missed and not active.skip[row] and not fight.dead[row.player] and t >= row.time + TEST_CAST then
+				if active.live then
+					liveUse({player = row.player, spell = row.spell, time = t, dur = row.dur, target = row.target})
+				else
+					row.done = true
+				end
+			end
+		end
+		while active.script[1] and t >= active.script[1].at do
+			table.remove(active.script, 1).run()
+			if not active then return end
 		end
 		for _, row in ipairs(active.taunts or {}) do
 			if t >= row.time + TEST_CAST then row.done = true end
@@ -1157,11 +1200,12 @@ ticker:SetScript("OnUpdate", function(_, e)
 		if active.live and left < -MATCH and not row.done and not row.missed and not fight.dead[row.player] then
 			row.missed = true
 			fight.missed[row.player .. "\0" .. row.spell] = row.time
+			sayTest(("%s didn't press %s (due %s)"):format(row.player, row.spell, clock(row.time)))
 			replanSoon()
 		end
 	end
 	showCard(cardRows(active.rows), active.period, t)
-	showStrip(active.rows, active.period, t, planTanks(active.rows) ~= nil)
+	showStrip(active.rows, active.period, t, active.aoeOnly or planTanks(active.rows) ~= nil)
 end)
 
 function stop()
@@ -1170,8 +1214,6 @@ function stop()
 	if strip then strip:Hide() end
 	active = nil
 end
-
-local function clock(t) return ("%d:%02d"):format(t / 60, t % 60) end
 
 -- a re-planned future from fight time from on: the strip and card redraw from it, and I'm told about my moves
 local function applyRows(future, from)
@@ -1218,7 +1260,7 @@ local function replan()
 	if not tanks then return end
 	local tank = fight.holder == tanks[2] and 2 or fight.holder == tanks[1] and 1 or #CP.SwapTimes(0, t) % 2 + 1
 	local rows = CP.Replan({
-		rows = active.rows, uses = fight.uses, pool = (roster(pullTime)), tanks = tanks, tank = tank, weaker = weakerTank(tanks),
+		rows = active.rows, uses = fight.uses, pool = active.pool or (roster(pullTime)), tanks = tanks, tank = tank, weaker = active.weaker or weakerTank(tanks),
 		now = t, dead = fight.dead, missed = fight.missed,
 		swaps = fight.holder and CP.SwapTimes(t, FIGHT, fight.stacks) or nil,
 	})
@@ -1227,6 +1269,10 @@ local function replan()
 		if r.time >= t then future[#future + 1] = r end
 	end
 	applyRows(future, t)
+	if active.test then -- the stand-in raid isn't the real one: nothing to send
+		sayTest(("re-planned, %d uses from here"):format(#future))
+		return
+	end
 	sendSeq = sendSeq + 1
 	for i, r in ipairs(future) do
 		send(("U\t%d\t%g\t%d\t%d\t%g\t%s\t%s\t%g\t%s\t%s"):format(sendSeq, t, #future, i, r.time, r.player, r.spell, r.dur, r.target or "", r.note or ""))
@@ -1238,16 +1284,64 @@ function replanSoon()
 	DBM:Schedule(0.3, replan)
 end
 
-DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
-	local text = saved and mod and saved.plans[tostring(mod.id):lower()]
+-- the pull being fought: its boss's plan runs from pullTime, and a plan for it that arrives during the pull starts then
+local pulled -- {mod, id}
+local function startPlan()
+	local text = saved.plans[pulled.id]
 	if not text or not DBM.Options.CooldownPlanEnabled then return end
 	stop()
 	active = CP.Parse(text)
 	if #active.rows == 0 then active = nil return end
-	active.from = saved.planFrom[tostring(mod.id):lower()]
-	shownFor = mod
+	active.from = saved.planFrom[pulled.id]
+	shownFor = pulled.mod
 	-- the plan's sender re-plans when cooldowns go off plan; a looping plan has no fight to re-plan
 	active.live = active.from == playerName and not active.period and planTanks(active.rows) ~= nil
+	wipe(done)
+	fight = {uses = {}, dead = {}, missed = {}}
+	update = nil
+	ticker:Show()
+end
+
+-- The raid leader's plan for a boss whose module asks for one (CP.Prepare) is made for them: when the module loads,
+-- and again on every pull from what everyone reports then, sent before the boss starts fighting. A plan they saved
+-- or sent from the editor, or got from an assistant, is left as it is.
+local AUTO_WAIT = 2	-- for everyone's cooldowns (C) to come back after the ask (Q)
+-- ponytail: tank planning is WIP (tanks not found by Main Assist, offline tanks report nothing), so for now
+-- no plan is made or run: a boss that asks for one (CP.Prepare) gets the timeline's AoE lane on its pull,
+-- the tank lane reading WIP. Set false to plan again.
+local AOE_ONLY = true
+local autoFor = {}
+local function ownsAuto(id)
+	return autoFor[id] and DBM:GetRaidRank() == 2 and (saved.auto[id] or not saved.plans[id])
+end
+-- origin: the time cooldowns are counted ready from (plan time 0)
+local function autoPlan(id, origin)
+	local pool, tanks = roster(origin)
+	tanks = {tanks[1], tanks[2]}
+	if #tanks < 2 then
+		-- only clients with the cooldown plan answer the ask, so a tank on an older DBM reports nothing
+		DBM:AddMsg(("No cooldown plan for %s: it needs two tanks' cooldowns, and %s reported. Set Main Tank on them in the raid frame; they need this DBM to report."):format(id, #tanks == 1 and ("only " .. tanks[1]) or "no tank"))
+		return
+	end
+	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks)})))
+	saved.plans[id], saved.planFrom[id], saved.auto[id] = text, playerName, true
+	track(text)
+	return text
+end
+
+function CP.Prepare(mod)
+	local id = tostring(mod.id):lower()
+	autoFor[id] = true
+	if AOE_ONLY or not saved or not ownsAuto(id) then return end
+	send("Q")
+	DBM:Schedule(AUTO_WAIT, function()
+		if ownsAuto(id) and autoPlan(id, GetTime()) then DBM:AddMsg(("Cooldown plan for %s made; it's made again and sent on each pull."):format(id)) end
+	end)
+end
+
+DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
+	if not saved or not mod then return end
+	if active and active.test then stop() end
 	-- plan time 0 is when Algalon starts fighting: 26s of roleplay on the lockout's first pull, 8.5s after
 	-- that (JustEngagedWith's introDelay); before the first pull there's no lockout timer yet (as DBM-Ulduar's Algalon checks)
 	local intro = 0
@@ -1256,11 +1350,58 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 		intro = minutes == 0 and 26 or 8.5
 	end
 	pullTime = GetTime() - (delay or 0) + intro
-	wipe(done)
-	fight = {uses = {}, dead = {}, missed = {}}
-	update = nil
-	ticker:Show()
+	local this = {mod = mod, id = tostring(mod.id):lower()}
+	pulled = this
+	if AOE_ONLY then
+		if not autoFor[this.id] or not DBM.Options.CooldownPlanEnabled then return end
+		stop()
+		active, shownFor = {rows = {}, aoeOnly = true}, mod
+		wipe(done)
+		fight = {uses = {}, dead = {}, missed = {}}
+		ticker:Show()
+		return
+	end
+	startPlan()
+	if not ownsAuto(this.id) then return end
+	send("Q")
+	DBM:Schedule(AUTO_WAIT, function()
+		if pulled ~= this or not ownsAuto(this.id) then return end
+		local text = autoPlan(this.id, pullTime)
+		if not text then return end
+		for _, m in ipairs(planMessages(this.id, text) or {}) do send(m) end
+		startPlan()
+	end)
 end)
+
+-- /dbm cd replan, the leader's at-will re-plan from what everyone reports now (a tank back online, a swap in
+-- the raid): in a pull this client runs live, the rest of the fight; in a pull without a plan, one timed from
+-- the pull; outside a fight, the next pull's plan. Sent either way.
+function CP.Remake(id)
+	if AOE_ONLY then
+		DBM:AddMsg("Cooldown plans are off for now (WIP): the timeline shows only the raid's AoE.")
+		return
+	end
+	if DBM:GetRaidRank() ~= 2 then
+		DBM:AddMsg("Only the raid leader can re-plan.")
+		return
+	end
+	send("Q")
+	DBM:AddMsg("Asking everyone for their cooldowns; re-planning in 2s.")
+	DBM:Schedule(AUTO_WAIT, function()
+		if active and active.live then
+			replan()
+			DBM:AddMsg("Re-planned the rest of the fight and sent it.")
+			return
+		end
+		local inPull = pulled and pulled.mod:IsInCombat()
+		if inPull then id = pulled.id end
+		local text = autoPlan(id, inPull and pullTime or GetTime())
+		if not text then return end
+		for _, m in ipairs(planMessages(id, text) or {}) do send(m) end
+		if inPull then startPlan() end
+		DBM:AddMsg(("Cooldown plan for %s made again and sent."):format(id))
+	end)
+end
 -- who a use of mine is on and why it's there
 local function reason(r)
 	local why = r.note == "Cosmic Smash" and " for Cosmic Smash" or r.note and (" (" .. r.note .. ")") or ""
@@ -1498,6 +1639,21 @@ function showStrip(rows, period, t, hasTanks)
 	end
 	-- worked out a second further than shown, so what slides in before the next update is already there
 	strip.s = CP.Strip(rows, period, t, STRIP_SPAN + 1, function(spell) return raidByName[spell] end)
+	if active and active.aoeOnly then
+		local tank = strip.s.lanes[1]
+		-- WIP across the whole view (and a little past, as it's redrawn between updates): the text alone, no bar
+		tank.blocks = {{from = t - 1, to = t + STRIP_SPAN + 2, bare = true, row = {spell = "WIP", player = "", target = ""}}}
+		-- the swaps without a plan: every 4th Phase Punch from the pull, tagged "Swap" with no tank's name
+		tank.tags, strip.s.swaps, strip.s.lastSwap = {{time = t, name = "", number = 0}}, {}, nil
+		for n, w in ipairs(CP.SwapTimes(0, t + STRIP_SPAN + 1)) do
+			if w <= t then
+				strip.s.lastSwap = {time = w, from = "", to = "", number = n} -- its tag slides away under the now line
+			else
+				tank.tags[#tank.tags + 1] = {time = w, name = "", number = n}
+				strip.s.swaps[#strip.s.swaps + 1] = w
+			end
+		end
+	end
 	drawStrip(t)
 	strip:Show()
 end
@@ -1519,7 +1675,7 @@ function drawStrip(t)
 	local perSecond = STRIP_W / STRIP_SPAN * ppu	-- pixels
 	local nowPx = math.floor(t * perSecond + 0.5)
 	local function x(time) return x0 + (math.floor(time * perSecond + 0.5) - nowPx) / ppu end
-	local function block(lane, from, to, color, a, text, mine, low)
+	local function block(lane, from, to, color, a, text, mine, low, textAlpha)
 		local p = low and stripPart(strip.trinkets, "low") or stripPart(strip.blocks)
 		p:ClearAllPoints()
 		p:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(from) - x0, -(lane - 1) * LANE_H - 1)
@@ -1529,7 +1685,7 @@ function drawStrip(t)
 		p:SetBackdropBorderColor(1, 0.82, 0, mine and 1 or 0)
 		p.text:SetFont("Fonts\\ARIALN.TTF", 12, "OUTLINE") -- narrow, so a caster's name fits beside the spell
 		p.text:SetText(text or "")
-		p.text:SetTextColor(1, 1, 1)
+		p.text:SetTextColor(1, 1, 1, textAlpha or 1)
 		-- a bar sliding out under the now line keeps its label readable just past the line, until the bar's
 		-- right edge catches it and pushes it off too
 		local left, right = x(from), x(to) - 1
@@ -1557,7 +1713,7 @@ function drawStrip(t)
 			-- who presses it, unless it's the tank's own; cut at the block's edge when it doesn't fit
 			local label = shortByName[r.spell] or r.spell
 			if r.player ~= r.target or raidByName[r.spell] then label = label .. " |cffe6e6e6\194\183 " .. r.player .. "|r" end
-			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, 0.9, label, r.player == playerName, trinketByName[r.spell])
+			block(i, b.from, b.to, colorByName[r.spell] or {0.45, 0.45, 0.5}, b.bare and 0 or 0.9, label, r.player == playerName, trinketByName[r.spell], b.bare and 0.4)
 		end
 	end
 	-- the AoE lane: each Cosmic Smash and Big Bang cast filling in toward where it lands, its name after the line
@@ -1635,6 +1791,7 @@ function drawStrip(t)
 	-- count from the oldest tag in view, so a long fight's swap numbers never climb over the now line
 	local base = s.lastSwap and math.max(0, s.lastSwap.number - 1) or 0
 	local function tag(number, name, px, swap)
+		if name == "" and not swap then return px end -- no tank to name
 		local p = strip.tagFrames[number]
 		if not p then
 			p = CreateFrame("Frame", nil, strip.tagRow)
@@ -1652,7 +1809,7 @@ function drawStrip(t)
 		end
 		local cc = classColor(name) or {r = 0.6, g = 0.6, b = 0.7}
 		p:SetBackdropColor(cc.r, cc.g, cc.b, 1)
-		p.text:SetText((swap and "Swap \194\183 " or "") .. name)
+		p.text:SetText(swap and (name ~= "" and "Swap \194\183 " .. name or "Swap") or name)
 		p.text:SetTextColor(1, 1, 1) -- the outline keeps white readable on any class colour
 		local w = p.text:GetStringWidth() + 6
 		local left, right = math.max(px, 0), math.min(px + w, STRIP_W + 2) -- the now line and the strip's edge
@@ -1725,11 +1882,72 @@ function CP.ApplyLock(mod)
 	shownFor = shownFor or mod
 	applyLock()
 end
+-- the mock fight's misuses: each picks its row off the generated plan, as the plan differs with who I play.
+-- The re-plan then runs as the plan's sender's would in a real pull.
+local function firstRow(rows, after, ok)
+	for _, r in ipairs(rows) do
+		if r.time >= after and ok(r) then return r end
+	end
+end
+local function firstUse(rows, r) -- no earlier row of the same cooldown: it's ready from the pull
+	for _, o in ipairs(rows) do
+		if o ~= r and o.player == r.player and o.spell == r.spell and o.time < r.time then return false end
+	end
+	return true
+end
+local function testCast(at, r, text)
+	active.script[#active.script + 1] = {at = at, run = function()
+		sayTest(text)
+		liveUse({player = r.player, spell = r.spell, time = GetTime() - pullTime, dur = r.dur, target = r.target})
+	end}
+end
+local TEST_MISUSES = {
+	missed = function(rows) -- a swap's big cooldown never pressed
+		local r = firstRow(rows, 30, function(r) return r.note == "Tank swap" end)
+		if not r then return end
+		active.skip[r] = true
+		return ("%s won't press %s for the swap at %s"):format(r.player, r.spell, clock(r.time))
+	end,
+	late = function(rows) -- an external 12s late: a no-show at 6s, then a cast off the plan
+		local r = firstRow(rows, 30, function(r) return r.target and r.player ~= r.target end)
+		if not r then return end
+		active.skip[r] = true
+		testCast(r.time + 12, r, ("%s presses %s on %s, 12s late"):format(r.player, r.spell, r.target))
+		return ("%s will press %s (due %s) 12s late"):format(r.player, r.spell, clock(r.time))
+	end,
+	early = function(rows) -- a tank's own cooldown 15s early, so it's down when it was planned
+		local trinket = {}
+		for _, c in ipairs(active.pool) do if c.trinket then trinket[c.player .. "\0" .. c.spell] = true end end
+		local r = firstRow(rows, 45, function(r) return r.player == r.target and not trinket[r.player .. "\0" .. r.spell] and firstUse(rows, r) end)
+		if not r then return end
+		active.skip[r] = true
+		testCast(r.time - 15, r, ("%s presses %s 15s early"):format(r.player, r.spell))
+		return ("%s will press %s (due %s) 15s early"):format(r.player, r.spell, clock(r.time))
+	end,
+	death = function(rows, me) -- a healer with uses ahead dies (not me: my own unit is alive, which reads as a rez)
+		local r = firstRow(rows, 60, function(r) return r.target and r.player ~= r.target and r.player ~= me end)
+		if not r then return end
+		active.script[#active.script + 1] = {at = r.time - 10, run = function()
+			sayTest(r.player .. " dies")
+			liveDeath(r.player)
+		end}
+		return ("%s will die 10s before their %s at %s"):format(r.player, r.spell, clock(r.time))
+	end,
+}
+
 -- a mock fight with a stand-in raid (the usual roster, me as myself or its holy paladin), drawn through the real card and
--- timeline from the pull's 8.5s intro to Ascend, to see how they look and move; again to stop it
-function CP.TestFight(mod)
+-- timeline from the pull's 8.5s intro to Ascend, to see how they look and move; again to stop it.
+-- misuse: one of TEST_MISUSES, so the fight goes off plan and is re-planned
+function CP.TestFight(mod, misuse)
 	if active and not active.test then return end -- a real pull is on
 	if active then stop() return end
+	if misuse and not TEST_MISUSES[misuse] then
+		local names = {}
+		for name in pairs(TEST_MISUSES) do names[#names + 1] = name end
+		table.sort(names)
+		DBM:AddMsg("/dbm cd test [" .. table.concat(names, "|") .. "]")
+		return
+	end
 	-- you play yourself if you're in the roster, else its holy paladin
 	local me = playerName
 	for _, name in ipairs({"Onaqui", "Dracohouston", "Stickboard", "Illithris", "Halosylvan"}) do
@@ -1757,10 +1975,16 @@ function CP.TestFight(mod)
 	stop()
 	shownFor = mod
 	active = {rows = rows, test = true, classes = {Onaqui = "DEATHKNIGHT", Dracohouston = "PALADIN", [me] = "PALADIN",
-		Stickboard = "PALADIN", Illithris = "PALADIN", Halosylvan = "PRIEST"}}
+		Stickboard = "PALADIN", Illithris = "PALADIN", Halosylvan = "PRIEST"}, pool = pool, weaker = "Dracohouston", skip = {}, script = {}}
 	pullTime = GetTime() + 8.5
 	wipe(done)
 	fight = {uses = {}, dead = {}, missed = {}}
+	if misuse then
+		active.live = true
+		local what = TEST_MISUSES[misuse](rows, me)
+		DBM:AddMsg("Mock fight: " .. (what or "nothing in this plan to misuse that way, so it stays on plan"))
+		table.sort(active.script, function(a, b) return a.at < b.at end)
+	end
 	ticker:Show()
 end
 
@@ -1822,7 +2046,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 	elseif event == "ADDON_LOADED" then
 		if ... ~= "DBM-Core" then return end
 		saved = DBM_CooldownPlans
-		saved.plans, saved.mine, saved.planFrom = saved.plans or {}, saved.mine or {}, saved.planFrom or {}
+		saved.plans, saved.mine, saved.planFrom, saved.auto = saved.plans or {}, saved.mine or {}, saved.planFrom or {}, saved.auto or {}
 		saved.mine[playerName] = saved.mine[playerName] or {}
 		reported[playerName] = saved.mine[playerName]
 		for cast, c in pairs(data) do
@@ -1888,10 +2112,13 @@ events:SetScript("OnEvent", function(_, event, ...)
 				local text = table.concat(inc.lines, "\n")
 				saved.plans[id] = text
 				saved.planFrom[id] = sender
+				saved.auto[id] = nil
 				saved.lastPlan = id
 				track(text)
 				DBM:AddMsg(("Cooldown plan for %s received from %s."):format(id, sender))
 				tellMine(id)
+				-- the leader's plan made on the pull: start on it now
+				if pulled and pulled.id == id and pulled.mod:IsInCombat() and not AOE_ONLY then startPlan() end
 			end
 		end
 	else
@@ -1915,28 +2142,12 @@ events:SetScript("OnEvent", function(_, event, ...)
 		end
 		if active and active.live then
 			if sub == "UNIT_DIED" and destName then
-				for _, r in ipairs(active.rows) do
-					if (r.player == destName or r.target == destName) and r.time > GetTime() - pullTime then
-						fight.dead[destName] = true
-						replanSoon()
-						break
-					end
-				end
+				liveDeath(destName)
 			elseif sub == "SPELL_CAST_SUCCESS" and tracked[spell] and sourceName then
 				local use = {player = sourceName, spell = spell, time = GetTime() - pullTime, dur = (CP.Info(sourceName, spell))}
 				-- Divine Sacrifice has no target: it covers whoever has the boss
 				use.target = not smashOnlyByName[spell] and not offSelf and (roleByName[spell] == "ext" and (destName or fight.holder) or sourceName) or nil
-				fight.uses[#fight.uses + 1] = use
-				local i = not offSelf and CP.Match(active.rows, use)
-				if i then
-					active.rows[i].done = true
-				else
-					local tanks, matters = planTanks(active.rows), false
-					for _, r in ipairs(active.rows) do
-						if r.player == sourceName and r.spell == spell then matters = true end
-					end
-					if matters or (tanks and (use.target == tanks[1] or use.target == tanks[2])) then replanSoon() end
-				end
+				liveUse(use, offSelf)
 			end
 		end
 		if not tracked[spell] or not sourceName then return end
@@ -2027,6 +2238,7 @@ local function createEditor()
 	button("Check", -90, function() report(editing) end)
 	button("Save", 0, function()
 		saved.plans[editing] = editBox:GetText()
+		saved.auto[editing] = nil
 		track(saved.plans[editing])
 		report(editing)
 	end)
@@ -2043,6 +2255,7 @@ local function createEditor()
 		end
 		saved.plans[editing] = text
 		saved.planFrom[editing] = playerName
+		saved.auto[editing] = nil
 		saved.lastPlan = editing
 		track(text)
 		tellMine(editing)
@@ -2056,15 +2269,21 @@ local function createEditor()
 end
 
 -- /dbm cd <boss>: edit that boss's plan (default the last one edited); /dbm cd mine: my cooldowns in the
--- last plan; /dbm cd off|on: stop or resume showing plans; /dbm cd test: start or stop a mock fight
+-- last plan; /dbm cd off|on: stop or resume showing plans; /dbm cd replan: make the plan again now (leader);
+-- /dbm cd test [missed|late|early|death]: start or stop a mock fight, with that cooldown misuse re-planned
 function DBM:CooldownPlanCommand(arg)
 	arg = trim(arg or ""):lower()
 	if arg == "mine" then
 		if saved.lastPlan then tellMine(saved.lastPlan) end
 		return
 	end
-	if arg == "test" then -- temporary: the mock fight without going through Algalon's options
-		CP.TestFight(DBM:GetModByName("Algalon"))
+	if arg == "replan" then
+		CP.Remake(saved.lastEdited or "algalon")
+		return
+	end
+	local misuse = arg:match("^test%s*(%a*)$")
+	if misuse then -- temporary: the mock fight without going through Algalon's options
+		CP.TestFight(DBM:GetModByName("Algalon"), misuse ~= "" and misuse or nil)
 		return
 	end
 	editing = arg ~= "" and arg or saved.lastEdited or "algalon"

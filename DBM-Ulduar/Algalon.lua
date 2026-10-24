@@ -24,6 +24,7 @@ mod:AddBoolOption("CooldownPlanStrip", true)
 mod:AddBoolOption("CooldownPlanLock", false, nil, function() DBM.CooldownPlan.ApplyLock(mod) end)
 mod:AddButton(L.MoveCooldownPlan, function() DBM.CooldownPlan.ShowToMove(mod) end, nil, 200, 20)
 mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.TestFight(mod) end, nil, 200, 20)
+DBM.CooldownPlan.Prepare(mod) -- the raid leader's plan, made now and again on each pull
 
 mod:RegisterEvents(
 	"CHAT_MSG_MONSTER_YELL",
