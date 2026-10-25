@@ -268,7 +268,8 @@ L:SetWarningLocalization({
 
 L:SetTimerLocalization({
 	TimerHardmode		= "Hard mode",
-	TimerLightningChargeCast	= "Lightning Charge Cast"
+	TimerLightningChargeCast	= "Lightning Charge Cast",
+	TimerUnbalancingStrike		= "Possible Unbalancing Strike"
 })
 
 L:SetOptionLocalization({

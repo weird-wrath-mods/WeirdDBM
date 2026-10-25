@@ -48,7 +48,7 @@ local specWarnUnbalancingStrike		= mod:NewSpecialWarningTaunt(62130, nil, nil, n
 
 local timerLightningCharge			= mod:NewVarTimer(10, 62466, "TimerLightningChargeCast", nil, nil, 3) -- ends as the wind-up starts (sign below)
 local timerLightningChargeCast		= mod:NewCastTimer(5, 62466, nil, nil, nil, 3) -- the wind-up itself
-local timerUnbalancingStrike		= mod:NewCDTimer(20, 62130, nil, "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON) --20s on AC
+local timerUnbalancingStrike		= mod:NewCDTimer(20, 62130, "TimerUnbalancingStrike", "Tank", nil, 5, nil, DBM_COMMON_L.TANK_ICON) --20s on AC
 local timerChainLightning			= mod:NewNextTimer(15, 64390) --15s on AC
 
 mod:AddBoolOption("AnnounceFails", false, "announce", nil, nil, nil, 62466)
@@ -103,13 +103,14 @@ local function sortFails1C(e1, e2)
 	return (lastcharge[e1] or 0) > (lastcharge[e2] or 0)
 end
 
--- AC: the strike event recasts on a flat Repeat(20s) whether or not the cast goes off, and a strike
--- that doesn't go off logs nothing (logs: 48 gaps of 39-41s, one slot each). So if the strike due
--- hasn't come 2s after its time, the bar moves on to the next slot.
-local STRIKE_EVERY, STRIKE_GRACE = 20, 2
-local function strikeMissed(self)
-	timerUnbalancingStrike:Start(STRIKE_EVERY - STRIKE_GRACE)
-	self:Schedule(STRIKE_EVERY, strikeMissed, self)
+-- AC: the strike event repeats on a flat 20s whether or not the strike goes off. It queues on the next
+-- swing, and a Chain Lightning started before that swing cancels it with nothing logged (one due mid-cast
+-- waits and lands after). Logs: every strike within 1.4s of a fixed 20s grid. So the bar runs the script's
+-- cycle, "Possible", and each real strike re-anchors it.
+local STRIKE_EVERY = 20
+local function strikeCycle(self)
+	timerUnbalancingStrike:Start(STRIKE_EVERY)
+	self:Schedule(STRIKE_EVERY, strikeCycle, self)
 end
 
 function mod:OnCombatEnd()
@@ -158,9 +159,8 @@ function mod:SPELL_CAST_SUCCESS(args)
 		timerLightningCharge:Start()
 		chargeLanded(self)
 	elseif spellId == 62130 then	-- Unbalancing Strike
-		timerUnbalancingStrike:Start()
-		self:Unschedule(strikeMissed)
-		self:Schedule(STRIKE_EVERY + STRIKE_GRACE, strikeMissed, self)
+		self:Unschedule(strikeCycle)
+		strikeCycle(self)
 	elseif args:IsSpellID(62580, 62604) then	-- Frostbolt Volley by Sif
 		timerFBVolley:Start()
 	end
