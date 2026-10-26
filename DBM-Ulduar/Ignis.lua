@@ -35,7 +35,7 @@ local timerAchieve				= mod:NewAchievementTimer(240, 2930)
 
 local soundAuraMastery			= mod:NewSound(63472, "soundConcAuraMastery")
 
-mod:AddSetIconOption("SlagPotIcon", 63477, false, false, {8})
+mod:AddSetIconOption("SlagPotIcon", 63477, true, false, {8})
 
 mod.vb.ConstructCount = 0
 
