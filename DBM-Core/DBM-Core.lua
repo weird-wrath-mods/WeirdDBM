@@ -5864,39 +5864,66 @@ do
 		return LGT:UnitHasTalent(unit, spell, talentGroup)
 	end
 
+	--Bears and Blood DKs share their tree with a dps build, so the tree alone can't say who tanks:
+	--a feral druid tanks with Protector of the Pack, a DK with Will of the Necropolis
+	local PROTECTOR_OF_THE_PACK = GetSpellInfo(57873)
+	local WILL_OF_THE_NECROPOLIS = GetSpellInfo(49189)
+
+	--tab: the talent tab with the most points; hasTalent(name) says whether the unit has that talent
+	local function specFromTab(class, tab, hasTalent)
+		if class == "DRUID" and tab >= 2 then
+			return specsTable.DRUID[tab == 3 and 4 or hasTalent(PROTECTOR_OF_THE_PACK) and 3 or 2]
+		elseif class == "DEATHKNIGHT" then
+			if hasTalent(WILL_OF_THE_NECROPOLIS) then return 250 end--Blood DK, the tank spec
+			if tab == 1 then return 251 end--a Blood dps build takes Frost's dps role
+		end
+		return specsTable[class][tab]
+	end
+
+	--Anything about the player is read from the client. LibGroupTalents answers talents and roles from
+	--its roster, which may not hold the player yet, and is only for the rest of the group.
+	local function PlayerHasTalent(name)
+		for tab = 1, GetNumTalentTabs() do
+			for i = 1, GetNumTalents(tab) do
+				local talentName, _, _, _, rank = GetTalentInfo(tab, i)
+				if talentName == name then return rank > 0 end
+			end
+		end
+		return false
+	end
+
 	local function GetInspectSpecialization(unit, class)
 		local spec  -- start with nil
 
 		if UnitExists(unit) then
 			class = class or select(2, UnitClass(unit))
 			if class and specsTable[class] then
-				local talentGroup = LGT:GetActiveTalentGroup(unit)
+				local isPlayer = UnitIsUnit(unit, "player")
+				local talentGroup = isPlayer and GetActiveTalentGroup() or LGT:GetActiveTalentGroup(unit)
 				local maxPoints, index = 0, 0
 
 				for i = 1, MAX_TALENT_TABS do
-					local _, _, pointsSpent = LGT:GetTalentTabInfo(unit, i, talentGroup)
-					if pointsSpent ~= nil then
-						if maxPoints < pointsSpent then
-							maxPoints = pointsSpent
-							if class == "DRUID" and i >= 2 then
-								if i == 3 then
-									index = 4
-								elseif i == 2 then
-									local points = UnitHasTalent(unit, 57881)
-									index = (points and points > 0) and 3 or 2
-								end
-							else
-								index = i
-							end
-						end
+					local pointsSpent
+					if isPlayer then
+						pointsSpent = select(3, GetTalentTabInfo(i, nil, nil, talentGroup))
+					else
+						pointsSpent = select(3, LGT:GetTalentTabInfo(unit, i, talentGroup))
+					end
+					if pointsSpent ~= nil and maxPoints < pointsSpent then
+						maxPoints = pointsSpent
+						index = i
 					end
 				end
-				spec = specsTable[class][index]
+				spec = specFromTab(class, index, isPlayer and PlayerHasTalent or function(name)
+					local points = UnitHasTalent(unit, name, talentGroup)
+					return points and points > 0
+				end)
 			end
 		end
 
 		return spec
 	end
+
 
 	local function GetSpecializationRole(unit, class)
 		unit = unit or "player" -- always fallback to player
@@ -5915,6 +5942,12 @@ do
 		class = class or select(2, UnitClass(unit))
 		if class == "HUNTER" or class == "MAGE" or class == "ROGUE" or class == "WARLOCK" then
 			return "DAMAGER"
+		end
+		if UnitIsUnit(unit, "player") then
+			local flags = private.specRoleTable[GetInspectSpecialization("player", class)]
+			if flags then
+				return flags.Tank and "TANK" or flags.Healer and "HEALER" or "DAMAGER"
+			end
 		end
 		return LGTRoleTable[LGT:GetUnitRole(unit)] or "NONE"
 	end
@@ -5964,7 +5997,7 @@ do
 			--LibGroupTalents had no talent data (common solo / right after load), which otherwise drops us to the
 			--flag-less "Initial <class>" template and breaks role/dispel SpecFlag defaults (e.g. RemoveDisease/RemoveCurse).
 			--Resolve the player's own spec from native talents instead: currentSpecGroup is the dominant talent tab.
-			specID, specName = specsTable[playerClass][currentSpecGroup], playerClass
+			specID, specName = specFromTab(playerClass, currentSpecGroup, PlayerHasTalent), playerClass
 		end
 		if specID then
 			currentSpecID, currentSpecName = tonumber(specID), specName
@@ -7501,7 +7534,7 @@ do
 	end
 
 	function bossModPrototype:IsMeleeDps(uId)
-		if uId then--This version includes ONLY melee dps
+		if uId and not UnitIsUnit(uId, "player") then--This version includes ONLY melee dps
 			local name = GetUnitName(uId, true)
 			--First we check if we have acccess to specID (ie remote player is using DBM or Bigwigs)
 			if raid[name].specID then--We know their specId
@@ -7536,7 +7569,7 @@ do
 	end
 
 	function DBM:IsMelee(uId, mechanical)--mechanical arg means the check is asking if boss mechanics consider them melee (even if they aren't, such as holy paladin/mistweaver monks)
-		if uId then--This version includes monk healers as melee and tanks as melee
+		if uId and not UnitIsUnit(uId, "player") then--This version includes monk healers as melee and tanks as melee
 			--Class checks performed first due to mechanical check needing to be broader than a specID check
 			local _, class = UnitClass(uId)
 			--In mechanical check, ALL paladins are melee so don't need anything fancy, as for rest of classes here, same deal
@@ -7568,7 +7601,7 @@ do
 	bossModPrototype.IsMelee = DBM.IsMelee
 
 	function DBM:IsRanged(uId)
-		if uId then
+		if uId and not UnitIsUnit(uId, "player") then
 			local name = GetUnitName(uId, true)
 			if raid[name].specID then--We know their specId
 				local specID = raid[name].specID
@@ -7586,7 +7619,7 @@ do
 	bossModPrototype.IsRanged = DBM.IsRanged
 
 	function bossModPrototype:IsSpellCaster(uId)
-		if uId then
+		if uId and not UnitIsUnit(uId, "player") then
 			local name = GetUnitName(uId, true)
 			if raid[name].specID then--We know their specId
 				local specID = raid[name].specID
@@ -7603,7 +7636,7 @@ do
 	end
 
 	function bossModPrototype:IsMagicDispeller(uId)
-		if uId then
+		if uId and not UnitIsUnit(uId, "player") then
 			local name = GetUnitName(uId, true)
 			if raid[name].specID then--We know their specId
 				local specID = raid[name].specID
@@ -7728,7 +7761,7 @@ function bossModPrototype:IsTank()
 end
 
 function bossModPrototype:IsDps(uId)
-	if uId then--External unit call.
+	if uId and not UnitIsUnit(uId, "player") then--External unit call.
 		--no SpecID checks because SpecID is only availalbe with DBM/Bigwigs, but both DBM/Bigwigs auto set DAMAGER/HEALER/TANK roles anyways so it'd be redundant
 		if IsPartyLFG() then -- On WotLK, Role API only works on LFG
 			local _, _, isDamager = UnitGroupRolesAssigned(uId)
@@ -7744,7 +7777,7 @@ function bossModPrototype:IsDps(uId)
 end
 
 function DBM:IsHealer(uId)
-	if uId then--External unit call.
+	if uId and not UnitIsUnit(uId, "player") then--External unit call.
 		--no SpecID checks because SpecID is only availalbe with DBM/Bigwigs, but both DBM/Bigwigs auto set DAMAGER/HEALER/TANK roles anyways so it'd be redundant
 		if IsPartyLFG() then -- On WotLK, Role API only works on LFG
 			local _, isHealer = UnitGroupRolesAssigned(uId)
