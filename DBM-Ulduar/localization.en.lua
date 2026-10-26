@@ -447,7 +447,9 @@ L:SetOptionLocalization({
 	SpecWarnSanity					= "Show special warning when $spell:63050 is very low",
 	SpecWarnGuardianLow				= "Show special warning when Guardian (Phase 1) is low (for DPS)",
 	WarnBrainPortalSoon				= "Show pre-warning for Brain Portal",
-	SpecWarnMadnessOutNow			= "Show special warning shortly before $spell:64059 ends",
+	SpecWarnMadnessOutNow			= "Show special warning shortly before $spell:64059 ends, while you are in the brain room",
+	MadnessGetOutSign				= "Show a GET OUT warning icon 5s before $spell:64059 ends, while you are in the brain room",
+	FervorGetOutSign				= "Show a GET OUT warning icon while $spell:63138 is on you, if it lands within 20 yards of Sara (not for tanks)",
 	SpecWarnBrainPortalSoon			= "Show special warning for next Brain Portal",
 	NextPortal						= "Show timer for next Brain Portal",
 	NextGuardian					= "Show timer for next Guardian of Yogg-Saron spawn (Phase 1)",
@@ -477,5 +479,6 @@ L:SetMiscLocalization({
 	CrusherBar			= "Crusher",
 	S3TrueFaceofDeath	= "Stage Three: True Face of Death",
 	YoggSaron			= "Yogg-Saron",
-	ImmortalGuardian	= "Immortal Guardian"
+	ImmortalGuardian	= "Immortal Guardian",
+	GetOut				= "GET OUT"
 })

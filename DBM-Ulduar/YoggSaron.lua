@@ -19,7 +19,8 @@ mod:RegisterEventsInCombat(
 	"SPELL_CAST_SUCCESS 64144 64465", --64167 64163",
 	"SPELL_SUMMON 62979",
 	"SPELL_AURA_APPLIED 63802 63830 63881 64126 64125 63138 63894 64775 64163 64465",
-	"SPELL_AURA_REMOVED 63802 63894 64163 63830 63138 63881 64465",
+	"SPELL_AURA_REFRESH 63138",
+	"SPELL_AURA_REMOVED 63802 63894 64163 63830 63138 63881 64465 63988",
 	"SPELL_AURA_REMOVED_DOSE 63050",
 	"CHAT_MSG_MONSTER_YELL",
 	"UNIT_HEALTH",
@@ -47,6 +48,7 @@ local timerFervor					= mod:NewTargetTimer(15, 63138, nil, false, 2)
 
 mod:AddSetIconOption("SetIconOnFervorTarget", 63138, false, false, {7})
 mod:AddBoolOption("ShowSaraHealth", false)
+mod:AddBoolOption("FervorGetOutSign", true, "announce", nil, nil, nil, 63138)
 
 -- Guardian of Yogg-Saron
 -- mod:AddTimerLine(L.GuardianofYoggSaron)
@@ -116,6 +118,8 @@ local warnMadness					= mod:NewCastAnnounce(64059, 2)
 local specWarnMadnessOutNow			= mod:NewSpecialWarning("SpecWarnMadnessOutNow", nil, nil, nil, nil, nil, nil, 64059, 64059)  -- Brain of Yogg-Saron. Warning, no voice pack support
 
 local timerMadness					= mod:NewCastTimer(60, 64059, nil, nil, nil, 5, nil, DBM_COMMON_L.DEADLY_ICON, nil, 3)  -- Brain of Yogg-Saron
+
+mod:AddBoolOption("MadnessGetOutSign", true, "announce", nil, nil, nil, 64059)
 
 -- Stage Three: True Face of Death
 mod:AddTimerLine(L.S3TrueFaceofDeath)
@@ -193,6 +197,43 @@ local SERVER_SWALLOW = 0.1
 local guardianGaps = {20, 18, 16, 14, 12}--gap after wave N, 10s from wave 6 on
 
 local guardianWave--forward declaration, SaraCastStall reschedules it
+
+local GET_OUT_SOUND = "Interface\\AddOns\\DBM-Core\\sounds\\alarm1.wav"
+--Sara never moves: her spawn (creature 62016) is boss_yoggsaron.cpp's Middle, 1980.28 -25.59. She
+--stands on DungeonMap.dbc 71, the Prison of Yogg-Saron floor (DBM-RangeCheck's Ulduar level 3),
+--whose bounds are Y 594.75 to -315.75 left to right and X 2219 to 1612 top to bottom.
+local PRISON_FLOOR, PRISON_W, PRISON_H = 3, 910.5, 607
+local SARA_MAP_X, SARA_MAP_Y = (594.75 + 25.5868) / PRISON_W, (2219 - 1980.28) / PRISON_H
+local FERVOR_GET_OUT = 20
+local fervorName, _, fervorIcon = GetSpellInfo(63138)
+--conditions.sql limits Induce Madness to players carrying Illusion Room, which the portal down
+--applies and the way back up cancels (63993), so the buff is the brain room check
+local illusionRoom = GetSpellInfo(63988)
+local madnessIcon = select(3, GetSpellInfo(64059))
+local MADNESS_CAST, MADNESS_GET_OUT = 60, 5
+
+local function playerNearSara()
+	--an open world map may be showing another floor; leave it be and read whatever it gives
+	if not (WorldMapFrame and WorldMapFrame:IsShown()) then SetMapToCurrentZone() end
+	if GetCurrentMapDungeonLevel() - (DungeonUsesTerrainMap() and 1 or 0) ~= PRISON_FLOOR then return false end
+	local x, y = GetPlayerMapPosition("player")
+	if x == 0 and y == 0 then return false end
+	local dx, dy = (x - SARA_MAP_X) * PRISON_W, (y - SARA_MAP_Y) * PRISON_H
+	return dx * dx + dy * dy <= FERVOR_GET_OUT * FERVOR_GET_OUT
+end
+
+local function fervorGetOut(self)
+	if not self.Options.FervorGetOutSign or self:IsTank() or not playerNearSara() then return end
+	local _, _, _, _, _, _, expires = UnitDebuff("player", fervorName)
+	local left = expires and expires - GetTime() or 15
+	if left > 0 then DBM.WarningSign:Show(fervorIcon, left, L.GetOut, GET_OUT_SOUND) end
+end
+
+local function madnessGetOut(self)
+	if not UnitBuff("player", illusionRoom) then return end
+	specWarnMadnessOutNow:Show()
+	if self.Options.MadnessGetOutSign then DBM.WarningSign:Show(madnessIcon, MADNESS_GET_OUT, L.GetOut, GET_OUT_SOUND) end
+end
 
 --The pending wave is done; advance to the next. exec is when its tick actually ran, read back from
 --the spawn; without one we fall back to where we predicted it would run.
@@ -476,6 +517,8 @@ function mod:OnCombatStart()
 end
 
 function mod:OnCombatEnd()
+	DBM.WarningSign:Hide(fervorIcon)
+	DBM.WarningSign:Hide(madnessIcon)
 	if self.Options.InfoFrame then
 		DBM.InfoFrame:Hide()
 	end
@@ -503,7 +546,7 @@ function mod:SPELL_CAST_START(args)
 		timerBrainPortal:Schedule(60) -- Log reviewed [60 schedule + 20 timer] (25 man NM log 2022/07/10 || S3 HM log 2022/07/21) - 80.0 || 80.0, 80.1 ; 80.0, 80.0, 80.0
 		warnBrainPortalSoon:Schedule(70)
 		specWarnBrainPortalSoon:Schedule(77)
-		specWarnMadnessOutNow:Schedule(55) -- TO DO: implement brain room check?
+		self:Schedule(MADNESS_CAST - MADNESS_GET_OUT, madnessGetOut, self)
 	elseif spellId == 64189 then		--Deafening Roar
 		timerNextDeafeningRoar:Start()
 		warnDeafeningRoarSoon:Schedule(55)
@@ -604,9 +647,12 @@ function mod:SPELL_AURA_APPLIED(args)
 		if self.Options.SetIconOnFervorTarget then
 			self:SetIcon(args.destName, 7, 15)
 		end
-		if args:IsPlayer() and self:AntiSpam(4, 1) then
-			specWarnFervor:Show()
-			specWarnFervor:Play("targetyou")
+		if args:IsPlayer() then
+			if self:AntiSpam(4, 1) then
+				specWarnFervor:Show()
+				specWarnFervor:Play("targetyou")
+			end
+			fervorGetOut(self)
 		end
 	elseif args:IsSpellID(63894, 64775) and self.vb.phase < 2 then	-- Shadowy Barrier of Yogg-Saron (this is happens when p2 starts, ~1s after IEEU, so correction factor is needed). Bugged on Warmane, 63894 is never applied (only removed), instead 64775 is applied to Sara
 		self:SetStage(2)
@@ -644,12 +690,34 @@ function mod:SPELL_AURA_APPLIED(args)
 	end
 end
 
+--Sara can recast Fervor on someone who still has it (about a quarter of casts in our logs), which only
+--refreshes the debuff: their bar and marker restart, and our sign goes again for the new duration, alarm
+--and all, as it is unexpected. SetIcon drops the marker's pending 15s clear before arming a new one.
+function mod:SPELL_AURA_REFRESH(args)
+	if args.spellId == 63138 then
+		timerFervor:Start(args.destName)
+		if self.Options.SetIconOnFervorTarget then
+			self:SetIcon(args.destName, 7, 15)
+		end
+		if args:IsPlayer() then
+			fervorGetOut(self)
+		end
+	end
+end
+
 function mod:SPELL_AURA_REMOVED(args)
 	local spellId = args.spellId
 	if spellId == 63802 and self.Options.SetIconOnBrainLinkTarget then		-- Brain Link
 		self:SetIcon(args.destName, 0)
-	elseif spellId == 63138 and self.Options.SetIconOnFervorTarget then	-- Sara's Fervor
-		self:SetIcon(args.destName, 0)
+	elseif spellId == 63138 then	-- Sara's Fervor
+		if self.Options.SetIconOnFervorTarget then
+			self:SetIcon(args.destName, 0)
+		end
+		if args:IsPlayer() then
+			DBM.WarningSign:Hide(fervorIcon)
+		end
+	elseif spellId == 63988 and args:IsPlayer() then	-- Illusion Room: out of the brain room
+		DBM.WarningSign:Hide(madnessIcon)
 	elseif spellId == 63894 then		-- Shadowy Barrier removed from Yogg-Saron (start p3)
 		-- "<298.03 19:54:54> [CLEU] SPELL_AURA_REMOVED:0xF150008208000F6B:Yogg-Saron:0xF150008208000F6B:Yogg-Saron:63894:Shadowy Barrier:BUFF:nil:", -- [15528]
 		self:SendSync("Phase3")			-- Sync this because you don't get it in your combat log if you are in brain room.
