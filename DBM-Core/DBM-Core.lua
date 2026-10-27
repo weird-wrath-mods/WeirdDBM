@@ -3796,6 +3796,10 @@ do
 				end
 			end
 			dummyMod.text:Cancel()
+			--Our /pull chat countdown is scheduled locally, so a cancel/override from another sender must clear it here or it keeps announcing
+			if sender ~= playerName then
+				DBM:Unschedule(SendChatMessage)
+			end
 			DBM.Options.RestoreSettingPullTimer = nil
 			if timer == 0 then return end--"/dbm pull 0" will strictly be used to cancel the pull timer (which is why we let above part of code run but not below)
 			DBM.Options.RestoreSettingPullTimer = timer.."/"..time()
