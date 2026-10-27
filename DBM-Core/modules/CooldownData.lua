@@ -41,7 +41,7 @@ private.cooldownData = {
 		{field = "power", flat = 5, talent = 63410, rank = 1}, -- Improved Barkskin
 		{field = "power", flat = 10, talent = 63410, rank = 2}, -- Improved Barkskin
 	}},
-	[6940] = {buff = 6940, dur = 12, cd = 120, power = 30, role = "ext", class = "PALADIN", notSelf = true, notInTreeOf = 35395, mods = { -- Hand of Sacrifice
+	[6940] = {buff = 6940, dur = 12, cd = 120, power = 30, role = "ext", class = "PALADIN", notSelf = true, mods = { -- Hand of Sacrifice
 		{field = "power", flat = 5, talent = 53660, rank = 1}, -- Blessed Hands
 		{field = "power", flat = 10, talent = 53660, rank = 2}, -- Blessed Hands
 	}},
@@ -63,6 +63,15 @@ private.cooldownData = {
 	[47788] = {buff = 47788, dur = 10, cd = 180, power = 25, role = "ext", class = "PRIEST", mods = { -- Guardian Spirit
 	}},
 	[31821] = {buff = 31821, dur = 6, cd = 120, power = 15, role = "ext", class = "PALADIN", raid = true, smashOnly = true, mods = { -- Aura Mastery
+	}},
+	[642] = {buff = 642, dur = 12, cd = 300, power = 0, role = "bubble", class = "PALADIN", mods = { -- Divine Shield
+		{field = "dur", flat = 3, sets = {{pieces = 4, items = {39638, 39639, 39640, 39641, 39642, 40579, 40580, 40581, 40583, 40584, 43793, 43795, 43799, 43802, 43804}} --[[ Redemption Plate ]]}}, -- Divine Protection Duration
+		{field = "cd", flat = -30, talent = 31848, rank = 1}, -- Sacred Duty
+		{field = "cd", flat = -60, talent = 31848, rank = 2}, -- Sacred Duty
+	}},
+	[10278] = {buff = 10278, dur = 10, cd = 300, power = 0, role = "bubble", class = "PALADIN", mods = { -- Hand of Protection
+		{field = "cd", flat = -60, talent = 20174, rank = 1}, -- Guardian's Favor
+		{field = "cd", flat = -120, talent = 20174, rank = 2}, -- Guardian's Favor
 	}},
 	[64763] = {buff = 64763, dur = 20, cd = 120, power = 10, role = "self", class = "ANY", trinket = true, mods = { -- Heart of Iron
 	}},

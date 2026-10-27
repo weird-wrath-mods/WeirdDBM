@@ -93,6 +93,7 @@ end
 -- [player][spell] = {dur = s, cd = s, readyAt = GetTime()} as reported by each player;
 -- [player][spell] = GetTime() of their last use seen in the combat log
 local reported, lastUsed = {}, {}
+local tankReported = {} -- [player] = their average item level when their own talents say tank (T)
 CP.reported, CP.lastUsed = reported, lastUsed
 
 function CP.Info(player, spell)
@@ -396,12 +397,91 @@ local SMASH_LEAD, SMASH_TRY = 3, 0.4
 -- real cooldowns, the tank's own before shared ones, unused longest first; then trinkets, too weak to count as
 -- cover, into their owner's holes and next to their owner's weakest cooldowns. Nothing is planned for Cosmic
 -- Smash: the strip shows where each lands instead. Returns rows, problems, score.
+-- A non-tank paladin's Hand of Sacrifice goes up under a bubble, which takes the damage it passes to them (immune
+-- damage still counts toward the hand's cap, so it ends as it would). Divine Shield (all schools) where raid damage
+-- lands while it's up, a Cosmic Smash or a planned star kill, so it covers the paladin from that too; else Hand of
+-- Protection (physical, as Algalon's melee and Quantum Strike are), keeping Divine Shield for that. The planner
+-- reserves one this way and the card names it the same way from the paladin's real cooldowns.
+CP.BUBBLE_FULL, CP.BUBBLE_PHYS = "Divine Shield", "Hand of Protection" -- localized at load
+-- Forbearance's group (spell_pal_immunities, cast on themselves): Divine Shield, Hand of Protection and Divine
+-- Protection each keep all three off for 2 minutes. Avenging Wrath's marker (61987) does the same for 30s, unseen; it
+-- isn't planned, it's pressed on a paladin's own schedule, so a cast re-plans what of theirs it locks (liveUse). Lay on
+-- Hands only joins on themselves, which the plan never does; Hand of Sacrifice never does.
+CP.SHIELD_GUARD, CP.WRATH = "Divine Protection", "Avenging Wrath" -- localized at load
+local FORBEARANCE, WRATH_LOCK = 120, 30
+local function forbearing(spell) return spell == CP.BUBBLE_FULL or spell == CP.BUBBLE_PHYS or spell == CP.SHIELD_GUARD end
+local function raidDanger(a, b)
+	if CP.SmashTimes(a, b)[1] then return true end
+	for _, w in ipairs(CP.SafeWindows(a, b)) do
+		if not w.expires and (w.kills or 0) > 0 then return true end
+	end
+	return false
+end
+-- Hand of Sacrifice ends once it has passed on its caster's health (spell_pal_hand_of_sacrifice_aura): in the raid's
+-- logs it lasted 6-10s on a 25-man tank, not 12, and longer on a 10-man tank, who takes less. Booked flat, overlap
+-- on the long side rather than a gap on the short one: benched 8, 9 and 10s, longer bookings only looked better
+-- (and left gaps when hands ended early)
+local function sacBooked(pool, small)
+	local out
+	for i, c in ipairs(pool) do
+		if c.notSelf then
+			out = out or {unpack(pool)}
+			local copy = {}
+			for k, v in pairs(c) do copy[k] = v end
+			copy.dur = math.min(c.dur, small and 10 or 8)
+			out[i] = copy
+		end
+	end
+	return out or pool
+end
+
+-- which bubble for a hand at fight time t, given which are ready: CP.BUBBLE_FULL, CP.BUBBLE_PHYS or nil
+function CP.BubbleFor(t, fullReady, physReady)
+	local BUBBLE_DUR = 12
+	if fullReady and (raidDanger(t, t + BUBBLE_DUR) or not physReady) then return CP.BUBBLE_FULL end
+	if physReady then return CP.BUBBLE_PHYS end
+end
+
+-- A tank whose big cooldown can't be back for each of their swap-ins (Survival Instincts' 3 minutes, against a swap-in
+-- every 2:12 or so) swaps on their own cooldown that's back within a minute and nearly as strong (Barkskin) instead:
+-- it's there for every swap, and the big one is free to fill. A pool with the roles swapped where that holds (copies;
+-- same order, so opts.used still lines up). swapIn: the shortest time between one tank's swap-ins.
+local function swapRoles(pool, swapIn)
+	local SWAP_SHORT_CD, SWAP_SHORT_GAP = 60, 5
+	local bigOf = {}
+	for _, c in ipairs(pool) do
+		if c.role == "big" and (not bigOf[c.player] or (c.power or 0) > (bigOf[c.player].power or 0)) then bigOf[c.player] = c end
+	end
+	local short = {}
+	for _, c in ipairs(pool) do
+		local big = bigOf[c.player]
+		if big and big.cd > swapIn and c.role == "self" and not c.trinket and not c.raid and c.cd <= SWAP_SHORT_CD
+			and (c.power or 0) + SWAP_SHORT_GAP >= (big.power or 0) then short[c.player] = c end
+	end
+	if not next(short) then return pool end
+	local out = {}
+	for i, c in ipairs(pool) do
+		local s = short[c.player]
+		if s and (c == s or c.role == "big") then
+			local copy = {}
+			for k, v in pairs(c) do copy[k] = v end
+			copy.role = c == s and "big" or "self"
+			out[i] = copy
+		else
+			out[i] = c
+		end
+	end
+	return out
+end
+
 local function build(opts, rng, smashRng)
 	local from, stop = opts.from or 0, opts.stop or FIGHT
 	local swaps = opts.swaps or CP.SwapTimes(from, stop)
 	local tanks, tank = opts.tanks, opts.tank or 1
 	local covered = opts.covered or {}
-	local pool = opts.pool
+	local swapIn = math.huge
+	for k = 3, #swaps do swapIn = math.min(swapIn, swaps[k] - swaps[k - 2]) end
+	local pool = sacBooked(opts.swapShort and swapRoles(opts.pool, swapIn) or opts.pool, opts.small)
 	local rows, problems, uncovered, holes = {}, {}, 0, {}
 	local bigMissed = 0
 	local uses = {}	-- [i] = fight times planned or used
@@ -417,12 +497,30 @@ local function build(opts, rng, smashRng)
 	end
 
 	local gap = opts.playerGap or PLAYER_GAP
+	-- player's Forbearance group (forbearing) locked at t: another of it within 2 minutes either way (one at t would
+	-- lock the later one too), or their Avenging Wrath in the 30s before. self: the pool index asked about, whose own
+	-- cooldown is free()'s to check
+	local function locked(player, t, self)
+		for k, o in ipairs(pool) do
+			if k ~= self and o.player == player and forbearing(o.spell) then
+				for _, u in ipairs(uses[k]) do if math.abs(t - u) < FORBEARANCE then return true end end
+			end
+		end
+		for _, u in ipairs(opts.wrath and opts.wrath[player] or {}) do
+			if t >= u and t - u < WRATH_LOCK then return true end
+		end
+		for _, u in ipairs(opts.forbear and opts.forbear[player] or {}) do -- cast before a re-plan: CP.Replan
+			if math.abs(t - u) < FORBEARANCE then return true end
+		end
+		return false
+	end
 	local function free(i, t)
 		local c = pool[i]
 		if (c.readyAt or 0) > t then return false end
 		for _, u in ipairs(uses[i]) do
 			if math.abs(t - u) < c.cd then return false end
 		end
+		if forbearing(c.spell) and locked(c.player, t, i) then return false end -- a paladin tank's Divine Protection
 		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count)
 		if gap > 0 and not c.trinket then
 			for j, o in ipairs(pool) do
@@ -451,9 +549,29 @@ local function build(opts, rng, smashRng)
 		fixed[x[1]] = fixed[x[1]] or {}
 		table.insert(fixed[x[1]], {x[2], x[3]})
 	end
+	local isTank = {}
+	for _, n in ipairs(tanks) do isTank[n] = true end
+	-- the bubble a non-tank's Hand of Sacrifice at t goes up under (its pool index), true when it needs none (a tank
+	-- casting it), nil when neither is free: each its own cooldown, outside the caster's Forbearance lock
+	local function bubble(i, t)
+		local c = pool[i]
+		if not c.notSelf or isTank[c.player] then return true end
+		local full, phys
+		for j, b in ipairs(pool) do
+			if b.player == c.player and b.role == "bubble" then
+				local ok = (b.readyAt or 0) <= t and not locked(c.player, t, j)
+				for _, u in ipairs(uses[j]) do if math.abs(t - u) < b.cd then ok = false end end
+				if ok and b.spell == CP.BUBBLE_FULL then full = j elseif ok then phys = j end
+			end
+		end
+		local pick = CP.BubbleFor(t, full ~= nil, phys ~= nil)
+		return pick == CP.BUBBLE_FULL and full or pick and phys or nil
+	end
 	local raidOn = {}	-- [who] = {{from, to}} of raid-wide cooldowns on them
 	local function use(i, t, who, note)
 		local c = pool[i]
+		local b = bubble(i, t)
+		if type(b) == "number" then table.insert(uses[b], t) end -- reserved: no row, the card names it
 		if c.smashOnly then who = nil end -- the raid's, not the tank's
 		rows[#rows + 1] = {time = round(t), player = c.player, spell = c.spell, dur = c.dur, target = who, note = note, power = c.power}
 		table.insert(uses[i], t)
@@ -506,6 +624,8 @@ local function build(opts, rng, smashRng)
 	for _, r in ipairs(opts.keep or {}) do
 		for i, c in ipairs(pool) do
 			if c.player == r.player and c.spell == r.spell then
+				-- not one Forbearance now forbids (the paladin bubbled or pressed Avenging Wrath since): it's planned afresh
+				if bubble(i, r.time) == nil or forbearing(c.spell) and locked(c.player, r.time, i) then break end
 				use(i, r.time, r.target, r.note)
 				if c.role == "big" or r.note == "Tank swap" then keptSwap[#keptSwap + 1] = r end -- the pull's or a swap's, big or the fallback
 				break
@@ -527,7 +647,7 @@ local function build(opts, rng, smashRng)
 			end
 			if not pick then
 				for i, c in ipairs(pool) do
-					if usable(c, who) and not c.raid and not c.trinket and free(i, press) and not covers(who, press, press + c.dur) and (not pick or c.dur > pool[pick].dur) then pick = i end
+					if usable(c, who) and c.role ~= "bubble" and not c.raid and not c.trinket and free(i, press) and bubble(i, press) and not covers(who, press, press + c.dur) and (not pick or c.dur > pool[pick].dur) then pick = i end
 				end
 				problems[#problems + 1] = ("%s has no big cooldown ready at %s"):format(who, s > 1 and ("the swap at " .. round(at) .. "s") or "the pull")
 				bigMissed = bigMissed + 1
@@ -578,7 +698,9 @@ local function build(opts, rng, smashRng)
 				local pick, pickIdle, pickRank, soonest
 				for i, cd in ipairs(pool) do
 					-- only what ends before the next planned cover: cooldowns on one tank never overlap
-					if cd.role ~= "big" and not cd.smashOnly and not cd.trinket and usable(cd, who) and c + cd.dur <= (nextFixed or math.huge) + 0.01
+					-- a big one too (Barkskin as a bear's swap cooldown): its swaps are planned already, and free() keeps
+					-- it clear of them
+					if cd.role ~= "bubble" and not cd.smashOnly and not cd.trinket and usable(cd, who) and bubble(i, c) and c + cd.dur <= (nextFixed or math.huge) + 0.01
 						and not (cd.raid and besideRaid(who, c, c + cd.dur)) then
 						if free(i, c) then
 							local last = -math.huge
@@ -693,7 +815,7 @@ local function seeded(seed)
 		return seed / 2147483648
 	end
 end
-function CP.Generate(opts, tries)
+local function generateOnce(opts, tries)
 	local rng, smashRng, best, bestProblems, bestScore = seeded(12345), seeded(54321)
 	local function try(r, s)
 		local rows, problems, score = build(opts, r, s)
@@ -702,6 +824,19 @@ function CP.Generate(opts, tries)
 	for n = 0, tries or TRIES do try(n > 0 and rng or nil) end
 	for _ = 1, tries and math.floor(tries / 2) or SMASH_TRIES do try(rng, smashRng) end
 	return best, bestProblems, bestScore
+end
+
+-- opts.small (a 10-man): the plan is made both with and without a tank's short cooldown at their swaps (swapRoles:
+-- Barkskin rather than Survival Instincts), and the one with less bare time wins, then less trinket-only time. A swap
+-- on Barkskin and one on an external are what's being weighed, so the swaps-without-a-big-cooldown count doesn't
+-- decide. A 25-man swaps on the big one: if it's short of cooldowns, that's the raid's to fix.
+function CP.Generate(opts, tries)
+	if not opts.small then return generateOnce(opts, tries) end
+	local with = setmetatable({swapShort = true}, {__index = opts})
+	local a = {generateOnce(with, tries)}
+	local b = {generateOnce(opts, tries)}
+	if a[3][2] ~= b[3][2] then return unpack(a[3][2] < b[3][2] and a or b) end
+	return unpack(a[3][3] <= b[3][3] and a or b)
 end
 
 local MATCH = 6	-- a cast this close to its planned time is that planned use, and one this late is a no-show (the shortest cooldowns last 6s)
@@ -741,6 +876,10 @@ function CP.Replan(opts)
 	for _, r in ipairs(opts.rows) do
 		if r.time < now then
 			keep[#keep + 1] = r
+			-- not pressed yet but not a no-show either (a late press still matches it): its cooldown is spoken for
+			if not r.done and not r.missed and r.time > now - MATCH and not dead[r.player] then
+				used(r.player, r.spell, r.time, r.target, r.dur)
+			end
 		elseif r.time < now + LOCK and not dead[r.player] then
 			keep[#keep + 1] = r
 			used(r.player, r.spell, r.time, r.target, r.dur)
@@ -787,7 +926,14 @@ function CP.Replan(opts)
 		if t == holder and not dead[t] then tank = #tanks end
 	end
 	if dead[holder] then tank = 1 end -- the other tank has it now
-	local rows, problems = CP.Generate({pool = pool, tanks = tanks, tank = tank, covered = covered, running = running, from = from, stop = opts.stop, swaps = swaps, keep = carry, weaker = opts.weaker})
+	-- each paladin's Avenging Wrath casts (no bubble for 30s after one) and Forbearance group casts (none of the
+	-- group for 2 minutes): what each lock needs beyond the cast cooldown's own readiness
+	local wrath, forbear = {}, {}
+	for _, u in ipairs(opts.uses) do
+		local into = u.spell == CP.WRATH and wrath or forbearing(u.spell) and forbear
+		if into then into[u.player] = into[u.player] or {} table.insert(into[u.player], u.time) end
+	end
+	local rows, problems = CP.Generate({pool = pool, tanks = tanks, tank = tank, covered = covered, running = running, from = from, stop = opts.stop, swaps = swaps, keep = carry, weaker = opts.weaker, small = opts.small, wrath = wrath, forbear = forbear})
 	for _, r in ipairs(keep) do rows[#rows + 1] = r end
 	table.sort(rows, function(a, b) return a.time < b.time end)
 	return rows, problems
@@ -1007,6 +1153,17 @@ local saved
 local playerName = UnitName("player")
 local tracked = {}
 
+-- what the plan did and why, the last LOG_MAX lines, in the saved variables (DBM_CooldownPlans.log) to read after a
+-- reload or logout
+local function plog(fmt, ...)
+	local LOG_MAX = 500
+	if not saved then return end
+	local log = saved.log or {}
+	saved.log = log
+	log[#log + 1] = ("%s %.1f %s"):format(date("%H:%M:%S"), GetTime(), fmt:format(...))
+	while #log > LOG_MAX do table.remove(log, 1) end
+end
+
 local function send(msg)
 	local channel = GetNumRaidMembers() > 0 and "RAID" or GetNumPartyMembers() > 0 and "PARTY"
 	if channel then SendAddonMessage(PREFIX, msg, channel) end
@@ -1050,8 +1207,30 @@ local function sendOne(spell, r)
 	send(("C\t%s\t%s\t%s\t%d\t%s"):format(spell, r.dur or "", r.cd or "", readyIn(spell), r.power or ""))
 end
 
+-- my role from my own talents, as the boss mods see it (any mod carries IsTank)
+local function iTank()
+	local m = DBM.Mods and DBM.Mods[1]
+	return m and m.IsTank and m:IsTank() and true or false
+end
+
+-- my average item level over the 17 gear slots (not shirt or tabard); a two-hander with nothing in the off hand
+-- counts twice
+local function myItemLevel()
+	local sum = 0
+	for slot = 1, 18 do
+		local link = slot ~= 4 and GetInventoryItemLink("player", slot)
+		if link then
+			local _, _, _, ilvl, _, _, _, _, equipLoc = GetItemInfo(link)
+			sum = sum + (ilvl or 0)
+			if slot == 16 and equipLoc == "INVTYPE_2HWEAPON" and not GetInventoryItemLink("player", 17) then sum = sum + (ilvl or 0) end
+		end
+	end
+	return math.floor(sum / 17)
+end
+
 local function sendMine()
 	for spell, r in pairs(saved.mine[playerName] or {}) do sendOne(spell, r) end
+	send(iTank() and ("T\t1\t%d"):format(myItemLevel()) or "T\t0")
 end
 
 -- my cooldowns from talents, glyphs and gear; [name] = true for the ones CooldownData knows
@@ -1101,6 +1280,8 @@ local function computeMine()
 			return base + modifier + GetCombatRatingBonus(CR_DEFENSE_SKILL)
 		end,
 	})
+	-- Hand of Sacrifice ends once it has passed on my maximum health (spell_pal_hand_of_sacrifice_aura): on a tank
+	-- taking TANK_DTPS that's well under its 12s
 	local was = saved.mine[playerName]
 	for name in pairs(was) do if defaultByName[name] then was[name] = nil end end -- dropped talents or gear
 	wipe(computed)
@@ -1161,29 +1342,52 @@ local function weakerTank(tanks)
 	return CP.Weaker(tanks, hp)
 end
 
+-- a 10-man raid (normal or heroic): GetRaidDifficulty() is 1 or 3
+local function smallRaid()
+	return GetRaidDifficulty() % 2 == 1
+end
+
 local function roster(origin)
 	local units = {"player"}
 	for i = 1, GetNumRaidMembers() do units[#units + 1] = "raid" .. i end
 	if #units == 1 then for i = 1, GetNumPartyMembers() do units[#units + 1] = "party" .. i end end
-	local pool, tanks, bigs, seen = {}, {}, {}, {}
+	local pool, tanks, assists, selfTanks, seen = {}, {}, {}, {}, {}
 	local now = GetTime()
 	for _, unit in ipairs(units) do
 		local name = UnitName(unit)
 		if name and not seen[name] then
 			seen[name] = true
-			if GetPartyAssignment("MAINTANK", unit) then tanks[#tanks + 1] = name end
+			-- the server keeps one Main Tank: the second tank is the Main Assist
+			if GetPartyAssignment("MAINTANK", unit) then tanks[#tanks + 1] = name
+			elseif GetPartyAssignment("MAINASSIST", unit) then assists[#assists + 1] = name end
+			local ilvl = name == playerName and iTank() and myItemLevel() or name ~= playerName and tankReported[name]
+			if ilvl then selfTanks[#selfTanks + 1] = {name = name, ilvl = ilvl, order = #selfTanks} end
 			for spell, r in pairs(reported[name] or {}) do
 				local role = roleByName[spell]
 				if role and r.dur and r.cd then
 					pool[#pool + 1] = {player = name, spell = spell, dur = r.dur, cd = r.cd, power = r.power or defaultByName[spell][3],
 						role = role, raid = raidByName[spell], trinket = trinketByName[spell], smashOnly = smashOnlyByName[spell], notSelf = notSelfByName[spell], readyAt = math.max(0, (r.readyAt or now) - origin)}
-					if role == "big" and not bigs[name] then bigs[name] = true bigs[#bigs + 1] = name end
 				end
 			end
 		end
 	end
-	if #tanks < 2 then tanks = bigs end
+	for _, name in ipairs(assists) do tanks[#tanks + 1] = name end
+	-- short of two flagged: those whose own talents say tank (T), the best geared first, so they take the pull
+	if #tanks < 2 then
+		local flagged = {}
+		for _, name in ipairs(tanks) do flagged[name] = true end
+		table.sort(selfTanks, function(a, b)
+			if a.ilvl ~= b.ilvl then return a.ilvl > b.ilvl end
+			return a.order < b.order
+		end)
+		for _, t in ipairs(selfTanks) do if not flagged[t.name] then tanks[#tanks + 1] = t.name end end
+	end
 	table.sort(pool, function(a, b) return a.player .. a.spell < b.player .. b.spell end) -- same plan on every client
+	local by = {}
+	for _, c in ipairs(pool) do by[c.player] = (by[c.player] or 0) + 1 end
+	local who = {}
+	for name, n in pairs(by) do who[#who + 1] = name .. ":" .. n end
+	plog("roster: %d cooldowns (%s); tanks %s", #pool, table.concat(who, " "), table.concat(tanks, ", "))
 	return pool, tanks
 end
 
@@ -1257,6 +1461,13 @@ local function planTanks(rows)
 	return first and second and {first, second}
 end
 
+-- The running plan's two tanks, found once from its rows and kept: a re-plan after a tank dies leaves only the other
+-- tank's rows ahead, with no swap, and the fight (the strip, re-plans) still has two tanks
+local function activeTanks()
+	active.tanks = active.tanks or planTanks(active.rows)
+	return active.tanks
+end
+
 local function clock(t) return ("%d:%02d"):format(t / 60, t % 60) end
 
 -- a mock fight's scripted misuse, said in chat so it can be matched to what the card and timeline do
@@ -1273,11 +1484,33 @@ local function liveUse(use, offSelf)
 		active.rows[i].done = true
 		return
 	end
-	local tanks, matters = planTanks(active.rows), false
+	local tanks, matters = activeTanks(), false
+	local tank = tanks and (use.player == tanks[1] or use.player == tanks[2])
+	-- what of theirs Forbearance's group can lock: a planned one of the group (a tank's Divine Protection), or a
+	-- non-tank's hand, which goes up under a bubble. One of the group locks it 2 minutes, Avenging Wrath 30s
+	local lock = forbearing(use.spell) and FORBEARANCE or use.spell == CP.WRATH and WRATH_LOCK
 	for _, r in ipairs(active.rows) do
 		if r.player == use.player and r.spell == use.spell then matters = true end
+		if lock and r.player == use.player and not r.done and (forbearing(r.spell) or notSelfByName[r.spell] and not tank)
+			and r.time - use.time < lock and r.time > use.time + (lock == FORBEARANCE and MATCH or 0) then
+			matters = true -- (a bubble's own hand is due within MATCH of it)
+		end
 	end
 	if matters or (tanks and (use.target == tanks[1] or use.target == tanks[2])) then replanSoon() end
+end
+
+-- a cast seen live, from the combat log or a raider's own word (P), once: the other report of it is dropped
+local function castSeen(player, spell, destName, t, offSelf)
+	local SEEN_TWICE = 3
+	for _, u in ipairs(fight.uses) do
+		if u.player == player and u.spell == spell and math.abs(u.time - t) <= SEEN_TWICE then return end
+	end
+	if spell == CP.WRATH then return liveUse({player = player, spell = spell, time = t}, true) end
+	if not tracked[spell] then return end
+	local use = {player = player, spell = spell, time = t, dur = (CP.Info(player, spell))}
+	-- Divine Sacrifice has no target: it covers whoever has the boss
+	use.target = not smashOnlyByName[spell] and not offSelf and (roleByName[spell] == "ext" and (destName or fight.holder) or player) or nil
+	liveUse(use, offSelf)
 end
 
 local function liveDeath(name)
@@ -1357,7 +1590,7 @@ local function step(e)
 		end
 	end
 	showCard(cardRows(active.rows), active.period, t)
-	showStrip(active.rows, active.period, t, planTanks(active.rows) ~= nil)
+	showStrip(active.rows, active.period, t, activeTanks() ~= nil)
 end
 -- an error here would come back every frame: say the first one and keep going, so a fault in one part (the
 -- card, a re-plan) can't take the timeline down with it
@@ -1418,12 +1651,12 @@ local update -- the re-plan being received (U messages); each pull starts over, 
 local function replan()
 	if not active or not active.live then return end
 	local t = GetTime() - pullTime
-	local tanks = planTanks(active.rows)
+	local tanks = activeTanks()
 	if not tanks then return end
 	local tank = fight.holder == tanks[2] and 2 or fight.holder == tanks[1] and 1 or #CP.SwapTimes(0, t) % 2 + 1
 	local rows = CP.Replan({
 		rows = active.rows, uses = fight.uses, pool = active.pool or (roster(pullTime)), tanks = tanks, tank = tank, weaker = active.weaker or weakerTank(tanks),
-		now = t, dead = fight.dead, missed = fight.missed,
+		now = t, dead = fight.dead, missed = fight.missed, small = smallRaid(),
 		swaps = fight.holder and CP.SwapTimes(t, FIGHT, fight.stacks) or nil,
 	})
 	local future = {}
@@ -1450,14 +1683,18 @@ end
 local pulled -- {mod, id}
 local function startPlan()
 	local text = saved.plans[pulled.id]
-	if not text or not DBM.Options.CooldownPlanEnabled then return end
+	if not text or not DBM.Options.CooldownPlanEnabled then
+		plog("start %s: %s", pulled.id, not text and "no plan" or "plans disabled")
+		return
+	end
 	stop()
 	active = CP.Parse(text)
 	if #active.rows == 0 then active = nil return end
 	active.from = saved.planFrom[pulled.id]
 	shownFor = pulled.mod
 	-- the plan's sender re-plans when cooldowns go off plan; a looping plan has no fight to re-plan
-	active.live = active.from == playerName and not active.period and planTanks(active.rows) ~= nil
+	active.live = active.from == playerName and not active.period and activeTanks() ~= nil
+	plog("start %s: %d rows from %s, live %s", pulled.id, #active.rows, tostring(active.from), tostring(active.live))
 	wipe(done)
 	fight = {uses = {}, dead = {}, missed = {}}
 	update = nil
@@ -1468,10 +1705,10 @@ end
 -- and again on every pull from what everyone reports then, sent before the boss starts fighting. A plan they saved
 -- or sent from the editor, or got from an assistant, is left as it is.
 local AUTO_WAIT = 2	-- for everyone's cooldowns (C) to come back after the ask (Q)
--- ponytail: tank planning is WIP (tanks not found by Main Assist, offline tanks report nothing), so for now
--- no plan is made or run: a boss that asks for one (CP.Prepare) gets the timeline's AoE lane on its pull,
--- the tank lane reading WIP. Set false to plan again.
-local AOE_ONLY = true
+-- true: no plan is made or run; a boss that asks for one (CP.Prepare) gets the timeline's AoE lane on its pull, the
+-- tank lane reading WIP. Known open issues with planning on: tanks not found by Main Assist, offline tanks report
+-- nothing.
+local AOE_ONLY = false
 local autoFor = {}
 local function ownsAuto(id)
 	return autoFor[id] and DBM:GetRaidRank() == 2 and (saved.auto[id] or not saved.plans[id])
@@ -1481,11 +1718,12 @@ local function autoPlan(id, origin)
 	local pool, tanks = roster(origin)
 	tanks = {tanks[1], tanks[2]}
 	if #tanks < 2 then
+		plog("no plan for %s: %d tank(s)", id, #tanks)
 		-- only clients with the cooldown plan answer the ask, so a tank on an older DBM reports nothing
-		DBM:AddMsg(("No cooldown plan for %s: it needs two tanks' cooldowns, and %s reported. Set Main Tank on them in the raid frame; they need this DBM to report."):format(id, #tanks == 1 and ("only " .. tanks[1]) or "no tank"))
+		DBM:AddMsg(("No cooldown plan for %s: it needs two tanks' cooldowns, and %s reported. Set Main Tank and Main Assist on them in the raid frame; they need this DBM to report."):format(id, #tanks == 1 and ("only " .. tanks[1]) or "no tank"))
 		return
 	end
-	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks)})))
+	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})))
 	saved.plans[id], saved.planFrom[id], saved.auto[id] = text, playerName, true
 	track(text)
 	return text
@@ -1516,23 +1754,34 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	pullTime = GetTime() - (delay or 0) + intro
 	local this = {mod = mod, id = tostring(mod.id):lower()}
 	pulled = this
-	if AOE_ONLY then
-		if not autoFor[this.id] or not DBM.Options.CooldownPlanEnabled then return end
-		stop()
+	plog("pull %s: intro %g, enabled %s, aoeOnly %s, prepared %s, rank %s, saved plan %s (auto %s)", this.id, intro,
+		tostring(DBM.Options.CooldownPlanEnabled), tostring(AOE_ONLY), tostring(autoFor[this.id]), tostring(DBM:GetRaidRank()),
+		tostring(saved.plans[this.id] ~= nil), tostring(saved.auto[this.id]))
+	-- the timeline's AoE lane on its own: planning is off, or there's no plan (yet): one arriving takes over
+	local function aoeOnly()
+		if active or not autoFor[this.id] or not DBM.Options.CooldownPlanEnabled then return end
 		active, shownFor = {rows = {}, aoeOnly = true}, mod
 		wipe(done)
 		fight = {uses = {}, dead = {}, missed = {}}
 		ticker:Show()
+	end
+	if AOE_ONLY then
+		stop()
+		aoeOnly()
 		return
 	end
 	startPlan()
-	if not ownsAuto(this.id) then return end
+	aoeOnly()
+	if not ownsAuto(this.id) then plog("pull %s: not mine to plan, no ask", this.id) return end
 	send("Q")
+	plog("pull %s: asked (Q)", this.id)
 	DBM:Schedule(AUTO_WAIT, function()
-		if pulled ~= this or not ownsAuto(this.id) then return end
+		if pulled ~= this or not ownsAuto(this.id) then plog("pull %s: gone before the plan", this.id) return end
 		local text = autoPlan(this.id, pullTime)
 		if not text then return end
-		for _, m in ipairs(planMessages(this.id, text) or {}) do send(m) end
+		local msgs, long = planMessages(this.id, text)
+		plog("pull %s: plan made, %d lines sent%s", this.id, msgs and #msgs or 0, long and (", too long: " .. long[1]) or "")
+		for _, m in ipairs(msgs or {}) do send(m) end
 		startPlan()
 	end)
 end)
@@ -1586,6 +1835,28 @@ local function countdown(left) return left < 60 and tostring(math.ceil(left)) or
 
 -- personal card: a big countdown to my next press with the spell beside it, and the press after that on one
 -- line; right-click hides it
+-- the bubble to press before my Hand of Sacrifice when I'm not tanking (CP.BubbleFor, from my real cooldowns and
+-- Forbearance at its due time); false when it needs one and none can be up (the hand isn't safe: skip it, the
+-- leader's re-plan moves it); nil when it needs none: tanking, done, or a bubble already up. rows: the plan shown,
+-- which names its tanks when none is running yet (the card on receipt, before the pull)
+local function bubbleFirst(r, rows)
+	if r.player ~= playerName or r.done or not notSelfByName[r.spell] then return end
+	for _, n in ipairs(active and activeTanks() or planTanks(rows) or {}) do if n == playerName then return end end
+	if UnitBuff("player", CP.BUBBLE_FULL) or UnitBuff("player", CP.BUBBLE_PHYS) then return end
+	local inSec = active and r.time - (GetTime() - pullTime) or r.time -- before the pull: from the pull
+	local forbearance = select(7, UnitDebuff("player", GetSpellInfo(25771) or "Forbearance"))
+	local marker = GetSpellInfo(61987) or "Avenging Wrath"
+	local wrathMarker = select(7, UnitDebuff("player", marker)) or select(7, UnitBuff("player", marker))
+	if wrathMarker and (not forbearance or wrathMarker > forbearance) then forbearance = wrathMarker end
+	local function ready(name)
+		local start, dur = GetSpellCooldown(name)
+		if not start then return false end -- not known
+		local left = start > 0 and start + dur - GetTime() or 0
+		return math.max(left, forbearance and forbearance - GetTime() or 0) <= math.max(inSec, 0) + 0.5
+	end
+	return CP.BubbleFor(r.time, ready(CP.BUBBLE_FULL), ready(CP.BUBBLE_PHYS)) or false
+end
+
 function showCard(rows, period, t, prepull)
 	local c = CP.Card(rows, period, playerName, t)
 	if not allowed("CooldownPlanCard") or not c.go and not c.next then
@@ -1656,8 +1927,9 @@ function showCard(rows, period, t, prepull)
 		card.num:SetText(countdown(c.nextIn))
 		if c.nextIn <= 10 then card.num:SetTextColor(1, 0.82, 0) else card.num:SetTextColor(0.75, 0.75, 0.75) end
 	end
-	card.spell:SetText(r.spell)
-	card.sub:SetText(c.thenTaunt and "then Taunt" or sub(r))
+	local bubbleName = bubbleFirst(r, rows)
+	card.spell:SetText(bubbleName or r.spell)
+	card.sub:SetText(bubbleName and "then " .. r.spell or bubbleName == false and "no bubble: skip" or c.thenTaunt and "then Taunt" or sub(r))
 	-- the press after that: the next one when the big line is NOW, else the one after the next
 	local after, afterIn = c.go and c.next or c.later, c.go and c.nextIn or c.laterIn
 	card.rule:ClearAllPoints()
@@ -2267,6 +2539,15 @@ local TEST_MISUSES = {
 		end}
 		return ("%s will die 10s before their %s at %s"):format(r.player, r.spell, clock(r.time))
 	end,
+	tankdeath = function(rows, me) -- the tank coming in at a swap dies before it: the other tank's rows are all that's left
+		local r = firstRow(rows, 30, function(r) return r.note == "Tank swap" and r.player ~= me end)
+		if not r then return end
+		active.script[#active.script + 1] = {at = r.time - 10, run = function()
+			sayTest(r.player .. " dies")
+			liveDeath(r.player)
+		end}
+		return ("%s will die 10s before the swap at %s"):format(r.player, clock(r.time))
+	end,
 }
 
 -- a mock fight with a stand-in raid (the usual roster, me as myself or its holy paladin), drawn through the real card and
@@ -2288,7 +2569,8 @@ function CP.TestFight(mod, misuse)
 		if name == me then me = "Shapiffany" end
 	end
 	-- power (% damage reduction) as players' clients report it: the planner pairs trinkets with the weakest
-	local power = {[48792] = 51, [55233] = 30, [64763] = 10, [498] = 50, [64205] = 20, [6940] = 40, [1038] = 20, [31821] = 15, [33206] = 40}
+	local power = {[48792] = 51, [55233] = 30, [64763] = 10, [498] = 50, [64205] = 20, [6940] = 40, [1038] = 20, [31821] = 15, [33206] = 40,
+		[642] = 0, [10278] = 0}
 	local function C(player, spell, dur, cd, role, flag, flag2)
 		local c = {player = player, spell = GetSpellInfo(spell) or tostring(spell), dur = dur, cd = cd, role = role, power = power[spell]}
 		if flag then c[flag] = true end
@@ -2302,9 +2584,14 @@ function CP.TestFight(mod, misuse)
 		C("Dracohouston", 64205, 6, 120, "ext", "raid"), C("Dracohouston", hos, 12, 120, "ext", "notSelf"), C("Dracohouston", 1038, 10, 120, "self"),
 		C(me, 64205, 6, 120, "ext", "raid"), C(me, hos, 12, 120, "ext", "notSelf"), C(me, 31821, 6, 120, "ext", "raid", "smashOnly"),
 		C("Stickboard", 64205, 6, 120, "ext", "raid"), C("Stickboard", hos, 12, 120, "ext", "notSelf"), C("Stickboard", 31821, 6, 120, "ext", "raid", "smashOnly"),
-		C("Illithris", 31821, 6, 120, "ext", "raid", "smashOnly"),
+		C("Illithris", 31821, 6, 120, "ext", "raid", "smashOnly"), C("Illithris", hos, 12, 120, "ext", "notSelf"),
 		C("Halosylvan", 33206, 8, 144, "ext"),
 	}
+	-- every paladin's bubbles: a non-tank's Hand of Sacrifice goes up under one
+	for _, name in ipairs({me, "Stickboard", "Illithris", "Dracohouston"}) do
+		pool[#pool + 1] = C(name, 642, 12, 300, "bubble")
+		pool[#pool + 1] = C(name, 10278, 10, 300, "bubble")
+	end
 	local rows = CP.Generate({pool = pool, tanks = {"Onaqui", "Dracohouston"}, weaker = "Dracohouston"})
 	stop()
 	shownFor = mod
@@ -2381,6 +2668,8 @@ events:SetScript("OnEvent", function(_, event, ...)
 	elseif event == "ADDON_LOADED" then
 		if ... ~= "DBM-Core" then return end
 		saved = DBM_CooldownPlans
+		CP.BUBBLE_FULL, CP.BUBBLE_PHYS = GetSpellInfo(642) or CP.BUBBLE_FULL, GetSpellInfo(10278) or CP.BUBBLE_PHYS
+		CP.WRATH, CP.SHIELD_GUARD = GetSpellInfo(31884) or CP.WRATH, GetSpellInfo(498) or CP.SHIELD_GUARD
 		saved.plans, saved.mine, saved.planFrom, saved.auto = saved.plans or {}, saved.mine or {}, saved.planFrom or {}, saved.auto or {}
 		saved.mine[playerName] = saved.mine[playerName] or {}
 		reported[playerName] = saved.mine[playerName]
@@ -2396,10 +2685,22 @@ events:SetScript("OnEvent", function(_, event, ...)
 		local prefix, msg, _, sender = ...
 		if prefix ~= PREFIX or sender == playerName or not saved then return end
 		local kind = msg:sub(1, 1)
+		if kind ~= "L" and kind ~= "U" then plog("got %s from %s", msg:gsub("\t", " "), sender) end
 		if kind == "C" then
 			local _, spell, dur, cd, wait, power = strsplit("\t", msg)
 			reported[sender] = reported[sender] or {}
 			reported[sender][spell] = {dur = tonumber(dur), cd = tonumber(cd), power = tonumber(power), readyAt = GetTime() + (tonumber(wait) or 0)}
+		elseif kind == "T" then
+			-- "T\t1\t<average item level>" or "T\t0"; an older client's "T\t1" sorts last
+			local _, isTank, ilvl = strsplit("\t", msg)
+			tankReported[sender] = isTank == "1" and (tonumber(ilvl) or 0) or nil
+		elseif kind == "P" and active and active.live then
+			-- a raider's own press (see the combat log handler); the same cast seen in the log too counts once
+			local _, spell, t, dest = strsplit("\t", msg)
+			t, dest = tonumber(t), dest ~= "" and dest or nil
+			if spell and t then
+				castSeen(sender, spell, dest, t, tracked[spell] and roleByName[spell] ~= "ext" and dest and dest ~= sender)
+			end
 		elseif kind == "Q" then
 			sendMine()
 		elseif kind == "R" then
@@ -2475,14 +2776,16 @@ events:SetScript("OnEvent", function(_, event, ...)
 			-- Phase Punch is on whoever has the boss; its stacks say when they'll hand over
 			fight.holder, fight.stacks = destName, sub == "SPELL_AURA_APPLIED" and 1 or select(13, ...)
 		end
+		-- my own press goes to the raid too (P): phased in a Black Hole, nobody outside sees it in their combat log
+		if active and not active.test and active.from ~= playerName and sub == "SPELL_CAST_SUCCESS" and sourceName == playerName
+			and (tracked[spell] or spell == CP.WRATH) then
+			send(("P\t%s\t%.1f\t%s"):format(spell, GetTime() - pullTime, destName or ""))
+		end
 		if active and active.live then
 			if sub == "UNIT_DIED" and destName then
 				liveDeath(destName)
-			elseif sub == "SPELL_CAST_SUCCESS" and tracked[spell] and sourceName then
-				local use = {player = sourceName, spell = spell, time = GetTime() - pullTime, dur = (CP.Info(sourceName, spell))}
-				-- Divine Sacrifice has no target: it covers whoever has the boss
-				use.target = not smashOnlyByName[spell] and not offSelf and (roleByName[spell] == "ext" and (destName or fight.holder) or sourceName) or nil
-				liveUse(use, offSelf)
+			elseif sub == "SPELL_CAST_SUCCESS" and sourceName and (tracked[spell] or spell == CP.WRATH) then
+				castSeen(sourceName, spell, destName, GetTime() - pullTime, offSelf)
 			end
 		end
 		if not tracked[spell] or not sourceName then return end
@@ -2519,10 +2822,10 @@ local function generate()
 	local pool, tanks = roster(GetTime())
 	tanks = {tanks[1], tanks[2]}
 	if #tanks < 2 then
-		DBM:AddMsg("Generate needs two tanks: set Main Tank on them in the raid frame, or have them in the group with DBM.")
+		DBM:AddMsg("Generate needs two tanks: set Main Tank and Main Assist on them in the raid frame, or have them in the group with DBM.")
 		return
 	end
-	local rows, problems = CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks)})
+	local rows, problems = CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})
 	editBox:SetText(CP.Format(rows, problems))
 	report(editing)
 	for _, p in ipairs(problems) do DBM:AddMsg("  " .. p) end
