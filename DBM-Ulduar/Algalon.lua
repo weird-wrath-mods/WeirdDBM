@@ -130,7 +130,7 @@ local function raidMark(flags)
 	end
 end
 
-local GREEN, YELLOW, RED = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}, {0.85, 0.2, 0.2}
+local GREEN, YELLOW, RED, GREY = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}, {0.85, 0.2, 0.2}, {0.5, 0.5, 0.5}
 
 local function seg(from, to, c, a) return {from, to, c[1], c[2], c[3], a} end
 local function kHP(hp) return ("%.1fk"):format(hp / 1000) end
@@ -173,10 +173,32 @@ local function zoneBar(s, h, w, t)
 	return h, s.icon, {segs = {seg(0, top, GREEN), seg(top, h, YELLOW)}, text = "|cff5aa0ff" .. kHP((h - top) * starMax * 0.01) .. "|r"}
 end
 
+-- A star past the plan: it runs out after the last kill zone and no kill names it, so nobody needs to do anything
+-- about it. Those are the last 4 stars in the kill order (the 4:16.5 wave, running out at 5:56.5, a few seconds before
+-- Ascend ends the fight, and the 5:16.5 refill, which outlasts it), and the one before them, left to run out at 4:56.5.
+local function starIgnored(s, now)
+	local CP = DBM.CooldownPlan
+	local t = CP.FightTime and CP.FightTime()
+	if not t then return end
+	local last
+	for _, w in ipairs(CP.SafeWindows(0, math.huge)) do
+		if not w.expires then
+			last = w
+			for _, p in pairs(CP.StarKillPicks[w.index] or {}) do if p.star == s then return end end
+		end
+	end
+	return last and s.spawn + 100 > now + last.to - t
+end
+
 local function starBarLook(s, now)
 	local hp = starHP(s, now)
 	if hp <= 0 then return 0, s.icon end
 	local h = math.max(starBarPct(s, now, hp), 0)
+	if starIgnored(s, now) then
+		local h2, icon, style = starStyle(s, h, GREY)
+		style.name = L.StarBarIgnore -- still marked like the rest, to be seen: until then the bar asks for it
+		return h2, icon, style
+	end
 	local zone, t = starZone(s)
 	if zone then return zoneBar(s, h, zone, t) end
 	return starStyle(s, h, GREEN)
