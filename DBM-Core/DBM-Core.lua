@@ -5163,6 +5163,11 @@ do
 			self.currentModId = mod.id
 			--check completed. starting combat
 			tinsert(inCombat, mod)
+			-- EndCombat's second pass for this mod's last fight (unregister events at 2s, Stop and OnCombatEnd at 3s)
+			-- would land in this one when it's pulled again that soon: off, as the fight it was for is long over
+			self:Unschedule(mod.UnregisterInCombatEvents, mod)
+			self:Unschedule(mod.Stop, mod)
+			if mod.OnCombatEnd then self:Unschedule(mod.OnCombatEnd, mod) end
 			if mod.inCombatOnlyEvents and not mod.inCombatOnlyEventsRegistered then
 				mod.inCombatOnlyEventsRegistered = 1
 				mod:RegisterEvents(unpack(mod.inCombatOnlyEvents))

@@ -12,7 +12,6 @@ mod:SetWipeTime(20)
 -- so this must come before they are added (HealthFrame is re-added below and moves in too)
 mod:GroupSpells(L.CollapsingStar, "HealthFrame", "SetIconOnStars") -- localized in every language
 mod:AddBoolOption("HealthFrame", true) -- Collapsing Star bars, counted from the combat log
-mod:AddBoolOption("DoomCountdown", true) -- a "Cast Dooms" countdown bar over the star bars
 mod:SetBossHealthInfo() -- stars only: no Algalon bar on pull
 mod:AddSetIconOption("SetIconOnStars", nil, true, false) -- no DBM icon-setter election: every assist marks
 mod:SetUsedIcons(1, 2, 3, 4) -- star marks when no raid member holds one at pull
@@ -33,7 +32,7 @@ mod:RegisterEvents(
 
 mod:RegisterEventsInCombat(
 	"SPELL_CAST_START 64584 64443",
-	"SPELL_CAST_SUCCESS 65108 64122 64598 62301 64412 64592 65184",
+	"SPELL_CAST_SUCCESS 65108 64122 64598 62301 64412 64592 64395 65184",
 	"SPELL_AURA_APPLIED 64412",
 	"SPELL_AURA_APPLIED_DOSE 64412",
 	"SPELL_AURA_REMOVED 64412",
@@ -80,13 +79,28 @@ local starSlots = {} -- {hp, spawn, scheduled, wave, guid, dead, warned}: hp is 
 local starByGuid = {}
 local starDiedAt = {} -- guid -> time; synced as 0 so a phased client still learns about the death
 local starRows = {} -- the 4 bars, which never move; row.star is the star shown, if any
+local killPicked = {} -- star -> true: stars this client (as raid leader) named for a timeline kill window
 
 -- Fixed slot marks, the same every pull: square, moon, triangle, diamond. Skull and cross stay free
 -- for kill targets, star and circle for tanks. A mark is on one unit at a time, so a player wearing
 -- one of these loses it to the star.
 local STAR_MARKS = {6, 5, 4, 3}
+-- The opening wave's bar by spawn point (see placeOpening): north-east moon, north-west triangle, south-east
+-- square, south-west diamond
+local POINT_BAR = {2, 3, 1, 4}
 
 local playerGUID, phased, lastStarSync = nil, false, 0
+-- A star GUID this client finds itself goes out at once, at the end of the event that found it (so with any mark
+-- the same event showed), not on the next 2s sync: the opening wave's corners wait on the raid seeing its GUIDs.
+-- One learned from the raid's sync isn't sent back out.
+local sendStarSync -- below
+local inSync, foundStar = false, false
+local function sendFoundStar(now)
+	if foundStar then
+		foundStar = false
+		sendStarSync(now)
+	end
+end
 
 -- Collapse taken so far: a tick every whole second after the summon (the wave's emote); in the logs,
 -- decay deaths in one wave land whole seconds apart, within 0.2s. A star bound without its emote
@@ -113,120 +127,45 @@ local function raidMark(flags)
 	end
 end
 
--- Safe range: a star that dies while the raid is phased in a Black Hole for Big Bang explodes on
--- nobody. Logs (23 Big Bangs, T = cast start): Big Bang lands at T+7.98; the last raider is in by T+5.8
--- typically but as late as T+7.8; the first is released at T+9.03 typically, T+8.83 at the earliest.
--- The target is T+6.5..T+8.8. A Doom is aimed at T+8.0..T+8.8, after Big Bang has hit, when everyone
--- alive is phased whatever the raid does. Damage from here on is known exactly: Collapse ticks
--- on its schedule, and Curse of Doom hits 60s after it lands (logs: 59.9 to 60.0s, never a crit), with
--- no partial resists on a level 80 star. Its amount isn't fixed: unresisted on Algalon our locks did
--- 17.3k to 26.8k, with the +13% spell damage taken debuff a star won't carry, so 15.3k to 23.8k on a
--- star; a lock with no raid buffs did 13.4k to 13.9k. DOOM_HP sits at the low end, and the take-off aims
--- a Collapse tick under it: a bigger Doom still kills when it lands, while one more than a tick smaller
--- leaves the star to Collapse ticks after the raid is released.
--- So the HP that dies inside the target is a range: Collapse alone, about 2 ticks wide, and DOOM_HP wider
--- once a Doom is out that lands inside the target (aimed at T+8.4).
-local HOLD_TO, BIG_BANG_EVERY = 9, 90.5
-local SAFE_FROM, SAFE_TO = 6.5, 8.8
-local DOOM_HP, DOOM_DELAY = 14000, 60
-local DOOM_FROM, DOOM_POP = 8.0, 8.4 -- a Doom lands after Big Bang has hit; aimed at the middle
--- How far DOOM NOW leads the window. With the bars redrawn every 0.1s, a press made as the prompt
--- appeared reached the server at once in our tests, so no lead: it lands at the window's start or just after
-local REACTION = 0
-local DOOM = {[603] = true, [30910] = true, [47867] = true} -- ranks 1-3
-local DOOM_ICON = select(3, GetSpellInfo(47867)) or "Interface\\Icons\\Spell_Shadow_AuraOfDarkness"
-local bigBangAt -- start of the Big Bang casting now, else the next one
--- Dooms are for the first Big Bang only. On AC's schedule (waves at 16.5s then every 60s, Big Bang at 90s
--- then every 90.5s, a star living at most 100s) the second Big Bang can't have a star Doomed for it at all,
--- and the third is near the 6 min enrage. Once the first Big Bang's DOOM NOW has closed, stars without a
--- Doom are plain bars and the Cast Dooms bar goes.
-local doomsUntil
 local GREEN, YELLOW, RED = {0.2, 0.8, 0.2}, {0.95, 0.8, 0.15}, {0.85, 0.2, 0.2}
-local PURPLE = {0.6, 0.35, 0.85}
 
 local function seg(from, to, c, a) return {from, to, c[1], c[2], c[3], a} end
 local function kHP(hp) return ("%.1fk"):format(hp / 1000) end
-local function collapseBetween(s, now, t) return collapsed(s, t) - collapsed(s, now) end
 
--- The Big Bang the star is aimed at: the first whose target it can still die in, if even untouched
--- it lives that long
-local function targetBigBang(s, now)
-	if not bigBangAt then return end
-	local bb = bigBangAt
-	while now > bb + SAFE_TO do bb = bb + BIG_BANG_EVERY end
-	if starMax - collapsed(s, bb + SAFE_FROM) > 0 then return bb end
-end
-
--- When a Doom that is out lands, if it is still to come: only to tell one cast off its moment, since
--- the range always assumes a Doom landing on time
-local function doomLands(s, now)
-	return s.doomAt and s.doomAt > now and s.doomAt or nil
-end
-
--- The star dies inside the target if more damage than its HP lands by T+8.5, but no more than its HP
--- before T+6.5: low < hp <= high
-local function safeRange(s, now, bb, lands)
-	local from, to = bb + SAFE_FROM, bb + SAFE_TO
-	local low, high = collapseBetween(s, now, from - 0.001), collapseBetween(s, now, to)
-	if lands and lands < from then low = low + DOOM_HP end
-	if lands and lands <= to then high = high + DOOM_HP end
-	return low, high
-end
-
--- The bar is one instruction: the HP fill in one colour and one word or number before the percent.
---   green, blue number: HP still to take off to the zone a Doom landing on time gives; the same number
---   before and after the Doom is cast, so it can be worked to ahead of time
---   purple, DOOM IN Xs / DOOM NOW: in that zone, waiting for the Doom moment
---   yellow STOP: Doomed and it dies inside the target; leave it alone
---   red TOO LOW: it dies before the target, whatever happens now
---   red DOOM EARLY / DOOM LATE: its Doom lands outside the target, so the number can't be trusted
---   green, percent only: no Doom can land in time and it isn't Doomed, so there is nothing to aim
---   for (those stars are killed on purpose, spread out); every undoomed star once the first Big Bang's
---   DOOM NOW has closed
--- A Doomed star also gets the Doom icon after its name.
-local function starStyle(s, h, c, text, doomed)
-	local style = {segs = {seg(0, h, c)}, text = text}
-	if doomed then style.nameSuffix = " |T" .. DOOM_ICON .. ":0|t" end
-	return h, s.icon, style
-end
-
--- When to press for a Doom to land DOOM_FROM..SAFE_TO after Big Bang bb starts casting
-local function doomWindow(bb)
-	return bb + DOOM_FROM - DOOM_DELAY - REACTION, bb + SAFE_TO - DOOM_DELAY - REACTION
-end
-
-local function simpleBar(s, now, hp, h, bb)
-	local doomed = s.doomAt ~= nil
-	if not bb then return starStyle(s, h, GREEN, nil, doomed) end
-	-- a Doom that already hit on the way to this Big Bang: its damage is in hp now, so the bar carries on
-	-- with Collapse alone rather than dropping to green while the star still needs taking off
-	local hit = s.doomHit and s.doomHit > bb - 30
-	local pressFrom, pressTo = doomWindow(bb)
-	if not doomed and not hit and (now > pressTo or doomsUntil and now > doomsUntil) then
-		return starStyle(s, h, GREEN, nil, doomed)
-	end
-	-- one number whether or not the Doom is out yet: always worked out for a Doom landing on time. One
-	-- that lands outside the target is flagged rather than quietly changing the number
-	local lands = doomLands(s, now)
-	if lands and lands < bb + SAFE_FROM then return starStyle(s, h, RED, "|cffd93333" .. L.StarDoomEarly .. "|r", true) end
-	if lands and lands > bb + SAFE_TO then return starStyle(s, h, RED, "|cffd93333" .. L.StarDoomLate .. "|r", true) end
-	local low, high = safeRange(s, now, bb, not hit and bb + DOOM_POP or nil)
-	if hp <= low then return starStyle(s, h, RED, "|cffd93333" .. L.StarTooLow .. "|r", doomed) end
-	-- with a Doom still to land, take off to a Collapse tick under the top, so a Doom up to a tick short of
-	-- DOOM_HP still kills in time; the Doom zone is DOOM_HP wide, so this stays well above TOO LOW
-	local target = hit and high or high - starMax * 0.01
-	if hp > target then return starStyle(s, h, GREEN, "|cff5aa0ff" .. kHP(hp - target) .. "|r", doomed) end
-	if doomed or hit then return starStyle(s, h, YELLOW, "|cfff2cc26" .. L.StarStop .. "|r", doomed) end
-	local word = now < pressFrom and L.StarDoomIn:format(pressFrom - now) or L.StarDoomNow
-	return starStyle(s, h, PURPLE, "|cffb070ff" .. word .. "|r")
+local function starStyle(s, h, c)
+	return h, s.icon, {segs = {seg(0, h, c)}}
 end
 
 -- Bar position, in % of max: smooth between hits and moved by exactly the damage of each hit, so
--- the zone colours can be placed against it without flickering on Collapse ticks
+-- the yellow can be placed against it without flickering on Collapse ticks; it is the seconds until the star dies
+-- by itself
 local function starBarPct(s, now, hp)
 	local nt, tick = nextTick(s, now), starMax * 0.01
 	if not nt then return hp / tick end
 	return nt - now + hp / tick - 1
+end
+
+-- The timeline's kill zone a star is named for, still ahead: its zone or nil
+local function starZone(s)
+	local CP = DBM.CooldownPlan
+	local t = CP.FightTime and CP.FightTime()
+	if not t then return end
+	for _, w in ipairs(CP.SafeWindows(t, t + 200)) do
+		for _, p in pairs(CP.StarKillPicks[w.index] or {}) do
+			if p.star == s and not p.gone and not w.expires then return w, t end
+		end
+	end
+end
+
+-- A star named for a kill zone: the health to take off to have it die by itself before the zone ends, in yellow
+-- at the top of the bar and as a number before the percent. The bar is in seconds until it dies alone (starBarPct),
+-- so that's down to (zone end - now) on it, and both fall 1% a second from there: a star brought into the green
+-- stays there and dies in the zone. Taken below (zone start - now) it would die before the zone: red.
+local function zoneBar(s, h, w, t)
+	if h < w.from - t then return starStyle(s, h, RED) end
+	local top = math.max(w.to - t, 0)
+	if h <= top then return starStyle(s, h, GREEN) end
+	return h, s.icon, {segs = {seg(0, top, GREEN), seg(top, h, YELLOW)}, text = "|cff5aa0ff" .. kHP((h - top) * starMax * 0.01) .. "|r"}
 end
 
 local function starBarValue(s)
@@ -235,29 +174,9 @@ local function starBarValue(s)
 	local hp = starHP(s, now)
 	if hp <= 0 then return 0, s.icon end
 	local h = math.max(starBarPct(s, now, hp), 0)
-	while bigBangAt and now > bigBangAt + HOLD_TO do bigBangAt = bigBangAt + BIG_BANG_EVERY end
-	if s.doomAt and now > s.doomAt + 1 then s.doomHit, s.doomAt = s.doomAt, nil end -- its end went unseen (phased)
-	return simpleBar(s, now, hp, h, targetBigBang(s, now))
-end
-
--- The press window for the next Big Bang. A bar over the star bars counts down to it, full until
--- DOOM_BAR_SPAN before and empty at it, then NOW while a Doom still lands in time; after that it counts
--- to the next Big Bang's.
-local DOOM_BAR_SPAN = BIG_BANG_EVERY + DOOM_FROM - DOOM_DELAY - REACTION -- Big Bang cast start to the next window
-local function doomPressAfter(now)
-	if not bigBangAt then return end
-	local bb = bigBangAt
-	while now > bb + SAFE_TO - DOOM_DELAY - REACTION do bb = bb + BIG_BANG_EVERY end
-	return doomWindow(bb)
-end
-
-local function doomBarValue()
-	local now = GetTime()
-	local from = doomPressAfter(now)
-	if not from then return 100, nil, {segs = {seg(0, 100, PURPLE)}, valueText = ""} end -- intro: no Big Bang yet
-	if now >= from then return 100, nil, {segs = {seg(0, 100, PURPLE)}, valueText = "|cffb070ff" .. L.CastDoomsNow .. "|r"} end
-	local pct = math.min((from - now) / DOOM_BAR_SPAN, 1) * 100
-	return pct, nil, {segs = {seg(0, pct, PURPLE)}, valueText = ("%.1fs"):format(from - now)}
+	local zone, t = starZone(s)
+	if zone then return zoneBar(s, h, zone, t) end
+	return starStyle(s, h, GREEN)
 end
 
 -- A star takes the first free bar; with more than 4 known at once (a misjudged wave) it goes unshown
@@ -288,7 +207,7 @@ local function addStarWave(now)
 		if not s.dead then alive = alive + 1 end
 	end
 	-- slots in creation order, which is ascending free bar order; lo/hi: GUID counters bound so far
-	local wave = {n = STAR_COUNT - alive, slots = {}}
+	local wave = {n = STAR_COUNT - alive, slots = {}, opening = not starSlots[1]}
 	for _ = alive + 1, STAR_COUNT do addStarSlot(now, wave) end
 end
 
@@ -299,12 +218,41 @@ local function fitsWave(wave, c)
 	return math.max(wave.hi, c) - math.min(wave.lo, c) < wave.n
 end
 
+-- The opening wave puts one star on each spawn point, summoned in point order (CollapsingStarPos), so its GUID
+-- counters run c0..c0+3 by point. Once the raid has seen its lowest and highest, every client knows each star's
+-- point, and each star moves to its point's bar (POINT_BAR): the same mark on the same corner every pull. Until then its
+-- stars are neither marked nor picked for a kill, so no mark ever changes; the bars may reorder once. One of
+-- them dead by then (a few seconds in, so rare) leaves the bars as they are.
+local STAR_FIXED = {row = true, wave = true, spawn = true, scheduled = true} -- a slot's, not its star's
+local function openingUnknown(s)
+	return s.wave and s.wave.opening and not s.wave.placed
+end
+local function placeOpening(w)
+	w.placed = true
+	for _, s in ipairs(w.slots) do if s.dead then return end end
+	w.c0 = w.lo
+	local moved = {}
+	for _, s in ipairs(w.slots) do
+		if s.guid then
+			local star = {}
+			for k, v in pairs(s) do if not STAR_FIXED[k] then star[k], s[k] = v, nil end end
+			s.hp = starMax
+			moved[#moved + 1] = star
+		end
+	end
+	for _, star in ipairs(moved) do
+		local s = w.slots[POINT_BAR[tonumber(star.guid:sub(#STAR_GUID + 1), 16) - w.c0 + 1]]
+		for k, v in pairs(star) do s[k] = v end
+		starByGuid[star.guid] = s
+	end
+end
+
 -- A raid mark needs a unit token, so a star is marked the moment one of ours points at it (mouseover,
 -- target, focus, a raid member's target). Not DBM's ScanForMobs: Icons.lua keeps its own copy of
 -- SetRaidTarget, so its marks never reach the hook below and the bar would wait for the server.
 -- Every leader/assist marks, not just an elected one; all clients map a star to the same slot mark.
 local function markStarUnit(s, uId)
-	if s.marked or not s.row or not mod.Options.SetIconOnStars or DBM.Options.DontSetIcons then return end
+	if s.marked or not s.row or openingUnknown(s) or not mod.Options.SetIconOnStars or DBM.Options.DontSetIcons then return end
 	if DBM:IsInGroup() and DBM:GetRaidRank() == 0 then return end -- only leader/assist can mark; solo can
 	s.marked = true
 	local want = STAR_MARKS[s.row.index]
@@ -328,7 +276,7 @@ local function getStar(guid, now, noCreate)
 		end
 	end
 	local w = s and s.wave
-	local pick = w and w.slots[c % w.n + 1]
+	local pick = w and w.slots[w.c0 and POINT_BAR[c - w.c0 + 1] or c % w.n + 1]
 	if pick and not pick.guid and not pick.dead then s = pick end -- taken/dead only if the wave was misjudged
 	s = s or fallback
 	if not s and noCreate then return end
@@ -337,6 +285,11 @@ local function getStar(guid, now, noCreate)
 	starByGuid[guid] = s
 	local w = s.wave
 	if w then w.lo, w.hi = math.min(w.lo or c, c), math.max(w.hi or c, c) end
+	if w and w.opening and not w.placed and w.hi - w.lo == w.n - 1 then
+		placeOpening(w)
+		s = starByGuid[guid]
+	end
+	if not inSync then foundStar = true end
 	return s
 end
 
@@ -369,6 +322,13 @@ end
 
 local function clearStars()
 	starSlots, starByGuid, starDiedAt, starRows = {}, {}, {}, {}
+	killPicked = {}
+	local picks = {}
+	for index, marks in pairs(DBM.CooldownPlan.FIXED_STAR_PICKS or {}) do
+		picks[index] = {}
+		for k, mark in ipairs(marks) do picks[index][k] = {mark = mark} end
+	end
+	DBM.CooldownPlan.StarKillPicks = picks -- every client knows these already: nothing to sync
 end
 
 -- A raid mark sits on one unit at a time, so a star taking a mark takes it off any other star
@@ -418,7 +378,7 @@ local function readAllStarUnits(now)
 	end
 end
 
-local function sendStarSync(now)
+function sendStarSync(now)
 	if phased then return end -- our counting misses damage in a Black Hole; others have better numbers
 	local parts = {}
 	for _, s in ipairs(starSlots) do
@@ -433,6 +393,95 @@ local function sendStarSync(now)
 	if parts[1] then
 		lastStarSync = now
 		mod:SendSync("StarDmgHP", table.concat(parts, ",")) -- not "StarHP": older clients sent current HP
+	end
+end
+
+-- The timeline's kill labels show the named star's health: the star in the bar with that mark
+DBM.CooldownPlan.StarHP = function(mark)
+	for i, row in ipairs(starRows) do
+		local s = row.star
+		if STAR_MARKS[i] == mark and s and not s.dead then return starHP(s, GetTime()) / starMax * 100 end
+	end
+end
+
+-- And where it dies if left alone, in seconds from now: Collapse takes 1% of max on each whole second from the
+-- summon, so it dies on the tick that takes it to 0, a fixed moment until someone hits it. A star without a tick
+-- schedule drains smoothly: its health % in seconds.
+DBM.CooldownPlan.StarDeathIn = function(mark)
+	for i, row in ipairs(starRows) do
+		local s = row.star
+		if STAR_MARKS[i] == mark and s and not s.dead then
+			local now = GetTime()
+			local hp, tick = starHP(s, now), nextTick(s, now)
+			if not tick then return hp / starMax * 100 end
+			return tick - now + math.max(math.ceil(hp / (starMax * 0.01)) - 1, 0)
+		end
+	end
+end
+
+-- The timeline's kill zones name their stars by mark. Only the raid leader (or a solo player) picks, from its
+-- own HP readings, so no two clients can name different stars; everyone shows the synced marks. Every zone still
+-- ahead picks as soon as it can, in time order, so a star is named (and its bar shows what to take off) the
+-- moment it spawns: the lowest HP stars not already picked that won't run out before their kill, which keeps a
+-- wave's stars to the zones that wave is for. A zone whose star hasn't spawned yet keeps a "?" until a later tick
+-- picks it. A pick never changes: ties within a wave come down to a few hits, and a flip would send the raid onto
+-- another star.
+local function pickStarKills(now)
+	local CP = DBM.CooldownPlan
+	local t = CP.FightTime and CP.FightTime()
+	if not t or (DBM:IsInGroup() and DBM:GetRaidRank() < 2) then return end
+	-- the opening stars a fixed pick names are taken: their bars carry those marks once the wave is placed
+	local fixed = {}
+	for _, marks in pairs(CP.FIXED_STAR_PICKS or {}) do for _, m in ipairs(marks) do fixed[m] = true end end
+	for _, s in ipairs(starSlots) do
+		if s.wave and s.wave.opening and s.row and not openingUnknown(s) and fixed[STAR_MARKS[s.row.index]] then killPicked[s] = true end
+	end
+	for _, w in ipairs(CP.SafeWindows(t, t + 400)) do
+		local picks = CP.StarKillPicks[w.index] or {}
+		-- a star left to run out is named too: the one that turns 100s old there
+		if w.expires and not picks[1] then
+			local at = now + w.from - t
+			for _, s in ipairs(starSlots) do
+				if not s.dead and s.row and not openingUnknown(s) and not killPicked[s] and math.abs(s.spawn + 100 - at) < 1.5 then
+					killPicked[s] = true
+					mod:SendSync("StarKill", ("%d:1:%d"):format(w.index, STAR_MARKS[s.row.index]))
+					picks[1] = {mark = STAR_MARKS[s.row.index], star = s}
+					break
+				end
+			end
+		end
+		for k = 1, w.from > t and w.kills or 0 do
+			if not picks[k] then
+				local due = now + w.from + CP.STAR_SECOND * (k - 1) - t
+				local best
+				for _, s in ipairs(starSlots) do
+					if not s.dead and s.row and not openingUnknown(s) and not killPicked[s] and s.spawn + 100 > due
+						and (not best or starHP(s, now) < starHP(best, now)) then best = s end
+				end
+				if not best then break end
+				killPicked[best] = true
+				mod:SendSync("StarKill", ("%d:%d:%d"):format(w.index, k, STAR_MARKS[best.row.index]))
+				picks[k] = {mark = STAR_MARKS[best.row.index], star = best} -- also here: our own sync comes back after a round trip
+			end
+		end
+		CP.StarKillPicks[w.index] = picks
+	end
+end
+
+-- A named star that dies takes its zone off the timeline. Each pick is tied to the star in its mark's bar the
+-- first time that bar shows one: a pick is made or synced while its star is up, and the opening's fixed ones wait
+-- for the wave's spawn points to be known.
+local function bindStarKills()
+	for _, picks in pairs(DBM.CooldownPlan.StarKillPicks) do
+		for _, p in pairs(picks) do
+			if not p.star then
+				for i, row in ipairs(starRows) do
+					local s = row.star
+					if STAR_MARKS[i] == p.mark and s and not s.dead and not openingUnknown(s) then p.star = s end
+				end
+			end
+			if p.star and p.star.dead then p.gone = true end
+		end
 	end
 end
 
@@ -467,6 +516,7 @@ starLog:SetScript("OnEvent", function(_, frameEvent, arg1, ...)
 	elseif frameEvent == "RAID_TARGET_UPDATE" then -- someone (maybe not us) changed a mark
 		readAllStarUnits(GetTime())
 	end
+	sendFoundStar(GetTime())
 end)
 function onStarLog(event, _, _, _, destGUID, _, destFlags, a1, a2, a3, a4, a5)
 	local now = GetTime()
@@ -475,15 +525,6 @@ function onStarLog(event, _, _, _, destGUID, _, destFlags, a1, a2, a3, a4, a5)
 	end
 	if not destGUID or destGUID:sub(1, #STAR_GUID) ~= STAR_GUID then return end
 	if starByGuid[destGUID] then seeStarIcon(starByGuid[destGUID], raidMark(destFlags), now, true) end
-	if DOOM[a1] and (event == "SPELL_AURA_APPLIED" or event == "SPELL_AURA_REFRESH") then
-		local s = getStar(destGUID, now)
-		if s and not s.dead then s.doomAt = now + DOOM_DELAY end
-		return
-	elseif DOOM[a1] and event == "SPELL_AURA_REMOVED" then -- the Doom hit and the star lived
-		local s = starByGuid[destGUID]
-		if s then s.doomHit, s.doomAt = now, nil end
-		return
-	end
 	local amount, overkill
 	if event == "SWING_DAMAGE" then
 		amount, overkill = a1, a2
@@ -508,64 +549,59 @@ local function stopNextPunch()
 	timerNextPhasePunch:Stop()
 end
 
-local function startNextPunch(self, count)
-	timerNextPhasePunch:Start(15.5, count)
+local function startNextPunch(self, count, left)
+	left = left or 15.5
+	timerNextPhasePunch:Start(left, count)
 	self:Unschedule(stopNextPunch)
-	self:Schedule(15.5 + 12, stopNextPunch)
+	self:Schedule(left + 12, stopNextPunch)
 end
 
 local function matches(msg, str)
 	return str ~= nil and (msg == str or msg:find(str, nil, true) ~= nil)
 end
  
-function mod:startTimers()
-	startNextPunch(self, 1)
-	timerNextCollapsingStar:Start(16.5)
-	timerCDCosmicSmash:Start(26)
+-- the fight's timers from the end of the intro; elapsed: how long ago that was (the first Quantum Strike restarts
+-- them from it, 3.5s on)
+function mod:startTimers(elapsed)
+	elapsed = elapsed or 0
+	startNextPunch(self, 1, 15.5 - elapsed)
+	timerNextCollapsingStar:Start(16.5 - elapsed)
+	timerCDCosmicSmash:Start(26 - elapsed)
 	announcePreBigBang:Cancel()
-	announcePreBigBang:Schedule(80)
-	timerNextBigBang:Start(90)
-	bigBangAt = GetTime() + 90
-	doomsUntil = select(2, doomWindow(bigBangAt))
-	if self.Options.DoomCountdown then
-		self:Schedule(doomsUntil - GetTime(), function() DBM.BossHealth:RemoveBoss(L.CastDooms) end)
-	end
-	enrageTimer:Start(360)
+	announcePreBigBang:Schedule(80 - elapsed)
+	timerNextBigBang:Start(90 - elapsed)
+	enrageTimer:Start(360 - elapsed)
 end
 
 local starUpdate -- registered per pull: EndCombat drops it
+
 function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	clearStars()
+	DBM.CooldownPlan.StarKillSafe = true -- the timeline's Star kill safe windows, while there are stars
 	self:RegisterOnUpdateHandler(starUpdate, 0.5)
 	starMax = self:IsDifficulty("normal25") and 176400 or 88200
-	playerGUID, phased, lastStarSync, bigBangAt, doomsUntil = UnitGUID("player"), false, 0, nil, nil
+	playerGUID, phased, lastStarSync = UnitGUID("player"), false, 0
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:RegisterEvent(e) end
-	-- DBM-Core opened it under Algalon's name just before this. With the Cast Dooms bar on top, the
-	-- "Collapsing Stars" title goes between it and the stars instead.
-	DBM.BossHealth:SetHeaderText(self.Options.DoomCountdown and "" or L.CollapsingStars)
+	-- DBM-Core opened it under Algalon's name just before this
+	DBM.BossHealth:SetHeaderText(L.CollapsingStars)
 	DBM.BossHealth:SetBarSpacing(6) -- 4 stacked star bars: a bit under the default 8px gap
 	DBM.BossHealth:SetHeaderOffset(2) -- a little clear of the first bar
-	DBM.BossHealth:SetUpdateInterval(0.1) -- the Doom countdowns run to a tenth of a second
-	if self.Options.DoomCountdown then DBM.BossHealth:AddBoss(doomBarValue, L.CastDooms) end
+	DBM.BossHealth:SetUpdateInterval(0.1) -- the bars slide with the 1%/s Collapse, smoothly
 	for i = 1, STAR_COUNT do
 		local row = {index = i}
 		starRows[i] = row
-		local label = i == 1 and self.Options.DoomCountdown and L.CollapsingStars
-		DBM.BossHealth:AddBoss(function()
-			local pct, icon, style = starBarValue(row.star)
-			if label then
-				style = style or {}
-				style.label = label
-			end
-			return pct, icon, style
-		end, L["StarBar" .. i])
+		DBM.BossHealth:AddBoss(function() return starBarValue(row.star) end, L["StarBar" .. i])
 	end
 	self.vb.warned_preP2 = false
+	self.vb.introFixed = false
+	-- The first pull is the one with the long intro. Before it there is no despawn timer; the server starts it (at
+	-- 60 minutes) on that pull, in the same moment as the pull yell, so it can already read 60 here. A later pull
+	-- can't see 60: Algalon comes back 20s after a wipe, so the timer has ticked by then.
 	local text = select(3, GetWorldStateUIInfo(1))
-	local minutes = tonumber(text and text:match("%d+")) or 0 -- before firstpull there is no timer yet
-	if minutes == 0 then
+	local minutes = tonumber(text and text:match("%d+")) or 0
+	if minutes == 0 or minutes >= 60 then
 		timerCombatStart:Start(-delay)			-- 26s Roleplay
 		self:ScheduleMethod(26 - delay, "startTimers")
 	else
@@ -578,6 +614,7 @@ function mod:OnCombatEnd()
 	starLog:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:UnregisterEvent(e) end
 	clearStars()
+	DBM.CooldownPlan.StarKillSafe = nil
 	DBM.BossHealth:Clear()
 	DBM.WarningSign:Hide(bigBangIcon)
 end
@@ -586,7 +623,6 @@ function mod:SPELL_CAST_START(args)
 	if args:IsSpellID(64584, 64443) then	-- Big Bang
 		timerBigBangCast:Start()
 		timerNextBigBang:Start()
-		bigBangAt = GetTime()
 		announcePreBigBang:Cancel()
 		announcePreBigBang:Schedule(80.5)
 		specWarnBigBang:Show()
@@ -607,6 +643,14 @@ function mod:SPELL_CAST_SUCCESS(args)
 		timerCDCosmicSmash:Start()
 		specWarnCosmicSmash:Show()
 		specWarnCosmicSmash:Play("watchstep")
+	elseif args:IsSpellID(64592, 64395) and not self.vb.introFixed then	-- the pull's first Quantum Strike
+		-- the server casts it 3.5s after the intro, whichever intro it was: the timers and the plan's clock run
+		-- from it, whatever the pull guessed
+		self.vb.introFixed = true
+		timerCombatStart:Stop()
+		self:UnscheduleMethod("startTimers")
+		self:startTimers(3.5)
+		if DBM.CooldownPlan.SetFightTime then DBM.CooldownPlan.SetFightTime(3.5) end
 	end
 end
 
@@ -645,6 +689,7 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 		warnPhase2:Show()
 		warnPhase2:Play("ptwo")
 		clearStars()
+		DBM.CooldownPlan.StarKillSafe = nil
 		DBM.BossHealth:Hide() -- no more stars in phase 2
 	end
 end
@@ -657,8 +702,19 @@ function mod:UNIT_HEALTH(uId)
 end
 
 function mod:OnSync(msg, payload, sender)
+	if msg == "StarKill" and payload then
+		local index, k, mark = payload:match("^(%d+):(%d+):(%d+)$")
+		local picks = DBM.CooldownPlan.StarKillPicks
+		if index then
+			index = tonumber(index)
+			picks[index] = picks[index] or {}
+			picks[index][tonumber(k)] = {mark = tonumber(mark)}
+		end
+		return
+	end
 	if msg ~= "StarDmgHP" or sender == UnitName("player") or not payload then return end
 	local now = GetTime()
+	inSync = true
 	for suffix, hp, icon in payload:gmatch("(%x+):(%d*):?(%d*)") do
 		local guid, hp = STAR_GUID .. suffix, tonumber(hp)
 		if hp == 0 then
@@ -670,6 +726,7 @@ function mod:OnSync(msg, payload, sender)
 			if s and not s.icon and tonumber(icon) then setStarIcon(s, tonumber(icon)) end
 		end
 	end
+	inSync = false
 end
 
 function mod:UNIT_SPELLCAST_SUCCEEDED(_, spellName)
@@ -683,6 +740,7 @@ function starUpdate(self)
 	local now = GetTime()
 	if not starSlots[1] then return end
 	readAllStarUnits(now)
+	sendFoundStar(now)
 	for _, s in ipairs(starSlots) do
 		if not s.dead then
 			local hp = starHP(s, now)
@@ -699,6 +757,8 @@ function starUpdate(self)
 	end
 	-- ponytail: every DBM client sends every 2s while stars are up; send only on disagreement if traffic matters
 	if now - lastStarSync >= STAR_SYNC_EVERY then sendStarSync(now) end
+	pickStarKills(now)
+	bindStarKills()
 end
 local wsWasActive = false
 

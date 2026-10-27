@@ -229,6 +229,141 @@ function CP.SmashTimes(from, stop)
 	return out
 end
 
+-- Star kill zones {from, to, index, kills} overlapping from..stop, one per smash gap: 7s to 18.5s after a Cosmic
+-- Smash lands (healers have topped the raid from it; the explosion stays 7s clear of the next smash). In a gap a Big
+-- Bang lands in, the zone starts 5s after the landing if it still fits, else ends 1s before the landing: inside the
+-- cast is fine (Big Bang only kills the unphased, whatever their health) and the dying star leaves a Black Hole for
+-- it. A zone holding a summon opens at it, since a kill before would be replaced at once. index counts gaps with
+-- room, from the pull. A gap whose star would only be killed a few seconds before it runs out on its own gets no zone
+-- but a marker at that moment, {from = to = the run-out, expires = true}: let it go.
+local SAFE_FROM, SAFE_TO, BANG_AFTER, BANG_BEFORE = 7, 18.5, 5, 1
+-- a zone that ends before a Big Bang lands slides this much sooner, though it then starts 5s after the smash: the star
+-- dies earlier in the cast, with more time to use its Black Hole
+local BANG_SLIDE = 2
+local STAR_FIRST, STAR_EVERY, STAR_LIFE = 16.5, 60, 100
+local EXPIRES = "expires"
+-- Stars to kill in each zone, by index. Stars refill to 4 every 60s and each runs out 100s after it spawns, so a kill
+-- before a summon is replaced at once and one after it waits a minute. Laid out on the planner (Star kill planner
+-- artifact) and searched for the fewest doubles: one kill a zone, using Big Bang gaps 1 and 2, the second right
+-- after its summon. In gaps 4 and 11 the star is down to a few percent and runs out at 1:56.5 and 4:56.5, 9s or more
+-- from a smash: EXPIRES. Gap 6's star would run out at 2:56.5, 4s before the second Big Bang starts casting: killed
+-- instead, in a short zone ZONE_AT gives (from and to after the smash) that ends a second before then. Nothing in gap
+-- 3; none past 5:05: a pull still in phase 1 there can't reach 20% before the 6:00 Ascend.
+local STAR_KILLS = {1, 1, 1, EXPIRES, 1, 1, 1, 1, 1, 0, EXPIRES}
+local ZONE_AT = {[6] = {9, 17}}
+CP.STAR_SECOND = 8 -- a zone's second kill this long after its first: two explosions healers can take apart
+function CP.SafeWindows(from, stop)
+	local out, sm, n = {}, CP.SmashTimes(-1, stop + SMASH * 2), 0
+	for i = 1, #sm - 1 do
+		local a, b = sm[i] + SAFE_FROM, sm[i] + SAFE_TO
+		local land = CP.BangTimes(sm[i], sm[i + 1])[1]
+		if land then
+			if math.max(a, land + BANG_AFTER) < b then
+				a = math.max(a, land + BANG_AFTER)
+			else
+				a, b = a - BANG_SLIDE, math.min(b, land - BANG_BEFORE) - BANG_SLIDE
+			end
+		end
+		if a < b then
+			for k = 0, 9 do
+				local summon = STAR_FIRST + STAR_EVERY * k
+				if summon > a and summon < b then a = summon end
+			end
+			n = n + 1
+			local kills = STAR_KILLS[n]
+			if ZONE_AT[n] then a, b = sm[i] + ZONE_AT[n][1], sm[i] + ZONE_AT[n][2] end
+			if kills == EXPIRES then
+				for k = 0, 9 do
+					local out_at = STAR_FIRST + STAR_EVERY * k + STAR_LIFE
+					if out_at > sm[i] and out_at < sm[i + 1] and out_at > from and out_at < stop then
+						out[#out + 1] = {from = out_at, to = out_at, index = n, kills = 0, expires = true}
+					end
+				end
+			elseif kills and kills > 0 and b > from and a < stop then
+				out[#out + 1] = {from = a, to = b, index = n, kills = kills}
+			end
+		end
+	end
+	return out
+end
+
+-- The mock fight has no stars: the plan's kills played on stars refilling to 4 every 60s from 16.5, the oldest
+-- dying first and ties to the first bar, as the raid leader's picks would come out. Marks are the star bars'
+-- (Algalon.lua's STAR_MARKS: square, moon, triangle, diamond).
+local STAR_MARKS = {6, 5, 4, 3}
+local MOCK_BURN = 12
+-- Picks known before any star spawns: zones 1-4 kill the opening wave, all the same age, whose bars are its spawn
+-- points (Algalon.lua's placeOpening): square (south-east), moon (north-east), triangle (north-west), diamond
+CP.FIXED_STAR_PICKS = {[1] = {6}, [2] = {5}, [3] = {4}, [4] = {3}}
+function CP.MockStarPicks()
+	local picks, rows, ev = {}, {}, {}
+	for i = 0, 6 do ev[#ev + 1] = {t = 16.5 + 60 * i} end
+	for _, w in ipairs(CP.SafeWindows(0, 400)) do
+		for k = 1, w.kills or 0 do ev[#ev + 1] = {t = w.from + CP.STAR_SECOND * (k - 1), w = w, k = k} end
+	end
+	-- a summon before a kill at the same moment, as a zone opening at a summon means
+	table.sort(ev, function(a, b) if a.t ~= b.t then return a.t < b.t end return not a.w and b.w ~= nil end)
+	local expiries = {}
+	for _, w in ipairs(CP.SafeWindows(0, 400)) do if w.expires then expiries[#expiries + 1] = w end end
+	for _, e in ipairs(ev) do
+		for i = 1, 4 do
+			if rows[i] and rows[i] + 100 <= e.t then
+				for _, w in ipairs(expiries) do
+					if math.abs(rows[i] + 100 - w.from) < 0.5 then
+						picks[w.index] = {{mark = STAR_MARKS[i], born = rows[i], at = not CP.FIXED_STAR_PICKS[w.index] and math.max(w.from - 30, rows[i]) or nil}}
+					end
+				end
+				rows[i] = nil
+			end
+		end
+		if not e.w then
+			for i = 1, 4 do rows[i] = rows[i] or e.t end
+		else
+			local pick
+			for i = 1, 4 do if rows[i] and (not pick or rows[i] < rows[pick]) then pick = i end end
+			if pick then
+				-- the mock raid hits the star over the MOCK_BURN before its zone just hard enough that it would die
+				-- by itself mid-zone, then leaves it: the natural death tick comes in and settles there
+				local mid, born = (e.w.from + e.w.to) / 2, rows[pick]
+				picks[e.w.index] = picks[e.w.index] or {}
+				picks[e.w.index][e.k] = {mark = STAR_MARKS[pick], born = born, at = not CP.FIXED_STAR_PICKS[e.w.index] and math.max(e.w.from - 30, born) or nil,
+					burnFrom = e.w.from - MOCK_BURN, burnRate = math.max(0, (born + 100 - mid) / MOCK_BURN)}
+				rows[pick] = nil
+			end
+		end
+	end
+	return picks
+end
+
+-- A picked star's health % at plan time t: the star's own (CP.StarHP(mark), set by the boss mod while there are
+-- stars), else the mock fight's: 1%/s from its spawn plus the mock raid's burn, and none before it spawns (a fixed
+-- pick shows from the pull), as in a pull with no star to read yet
+function CP.PickHP(p, t)
+	local hp = CP.StarHP and CP.StarHP(p.mark)
+	if hp or not p.born or t < p.born then return hp end
+	return 100 - (t - p.born) - (p.burnRate or 0) * math.min(math.max(t - (p.burnFrom or t), 0), MOCK_BURN)
+end
+
+-- a pick's star has died: synced deaths mark it (Algalon.lua), the mock fight's die when their health runs out
+local function pickGone(p, t)
+	if p.gone then return true end
+	if p.born and not (CP.StarHP and CP.StarHP(p.mark)) then return (CP.PickHP(p, t) or 1) <= 0 end
+	return false
+end
+
+-- the zones and markers still to come at plan time t: one whose stars have all died is done, so it goes
+function CP.LiveWindows(from, stop, t)
+	local out = {}
+	for _, w in ipairs(CP.SafeWindows(from, stop)) do
+		local picks, left = CP.StarKillPicks[w.index] or {}, false
+		for k = 1, math.max(w.kills, 1) do
+			if not picks[k] or not pickGone(picks[k], t) then left = true end
+		end
+		if left then out[#out + 1] = w end
+	end
+	return out
+end
+
 -- when each Big Bang lands
 function CP.BangTimes(from, stop)
 	local out = {}
@@ -1054,6 +1189,16 @@ end
 
 -- fight
 local active, pullTime, done = nil, 0, {}
+
+-- the plan clock (what SmashTimes and SafeWindows count in) while a pull or the mock fight is on
+function CP.FightTime()
+	return active and GetTime() - pullTime
+end
+
+-- the boss mod sets the clock once the boss shows where the fight is (Algalon's first Quantum Strike: 3.5s)
+function CP.SetFightTime(t)
+	if active and not active.test then pullTime = GetTime() - t end
+end
 -- each tanking class's taunt (Spell IDs: server source for 62124 and 355, combat logs for 56222 and 6795)
 local TAUNT = {DEATHKNIGHT = 56222, PALADIN = 62124, WARRIOR = 355, DRUID = 6795}
 -- the plan's rows plus my taunts at my swap-ins, for the card; kept while the rows are, so a taunt stays done
@@ -1363,8 +1508,10 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	-- that (JustEngagedWith's introDelay); before the first pull there's no lockout timer yet (as DBM-Ulduar's Algalon checks)
 	local intro = 0
 	if mod.id == "Algalon" then
+		-- the first pull's despawn timer starts with it, at 60 (Algalon.lua's OnCombatStart); his first Quantum
+		-- Strike sets the clock exactly, through CP.SetFightTime
 		local minutes = tonumber((select(3, GetWorldStateUIInfo(1)) or ""):match("%d+")) or 0
-		intro = minutes == 0 and 26 or 8.5
+		intro = (minutes == 0 or minutes >= 60) and 26 or 8.5
 	end
 	pullTime = GetTime() - (delay or 0) + intro
 	local this = {mod = mod, id = tostring(mod.id):lower()}
@@ -1466,14 +1613,16 @@ function showCard(rows, period, t, prepull)
 		if pos then card:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else card:SetPoint("CENTER", 320, -160) end
 		applyLock()
 		card.num = card:CreateFontString(nil, "ARTWORK", "NumberFontNormalHuge")
-		card.num:SetWidth(54)
+		-- wide enough for "2:00" at 30 (a 54 cut it to "2..."; "1:59" fit, its 1 being narrow); the spell stays put
+		-- beside it, and the widest times may reach a little into the gap before it
+		card.num:SetWidth(66)
 		card.num:SetJustifyH("CENTER")
 		-- two matching rows, times in the left column and spells beside them; no widths, so nothing wraps:
 		-- the longest pieces measured in Friz (Icebound Fortitude at 14 is 124px of the 130 beside the countdown)
 		local friz = STANDARD_TEXT_FONT
 		card.spell = card:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
 		card.spell:SetFont(friz, 14)
-		card.spell:SetPoint("TOPLEFT", card.num, "TOPRIGHT", 6, -2)
+		card.spell:SetPoint("TOPLEFT", card, "TOPLEFT", 66, -12)
 		card.sub = card:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
 		card.sub:SetFont(friz, 12)
 		card.sub:SetTextColor(0.63, 0.63, 0.63)
@@ -1532,11 +1681,52 @@ local STRIP_SPAN, STRIP_W, LABEL_W, LANE_H, TAG_H, PAD = 30, 390, 29, 24, 14, 5	
 local NAME_X = 4	-- the lane names' left edge: about 4 units clear of the border, and the column ends about 2 past "Tank"
 local SMASH_COLOR = {1, 0.55, 0.23}	-- Cosmic Smash: its ramp, landing line and name
 local BANG_COLOR, BANG_LINE, BANG_TEXT = {0.59, 0.24, 0.75}, {0.75, 0.43, 1}, {0.84, 0.59, 1}	-- Big Bang: ramp, line, name
+-- Star kill safe windows (CP.SafeWindows): stripes tinted and faded in game (textures\stripes is white, alpha
+-- only), fading over SAFE_FADE at each end; the label rests SAFE_INSET in, clear of the fade
+local SAFE_COLOR, SAFE_ALPHA, SAFE_FADE, SAFE_INSET = {0.25, 0.75, 0.37}, 0.3, 20, 16
+-- the KILL stretched over a kill zone, over its stripes: a lighter green, faint, so the label in front reads first;
+-- KILL_SIDE in from each end, KILL_EDGE from the lane's top and bottom
+local KILL_COLOR, KILL_ALPHA, KILL_SIDE, KILL_EDGE = {0.63, 0.94, 0.71}, 0.22, 4, 2
+-- a star's death in the AoE lane: where a star left alone runs out (a marker) and where a named one would die if
+-- nobody touched it again. Either may show sooner than its place, as a warning that the star is going down early,
+-- but never later: a zone's tick not past the zone's end, a marker not past its run-out. DEATH_EDGE from the lane's
+-- top and bottom
+local DEATH_COLOR, DEATH_EDGE = {1, 0.42, 0.29}, 2
+-- the stars to kill in window w: the picked marks (synced from the raid leader, or the mock fight's), "?" until
+-- a star is picked, which may be after it spawns; each with its health now, so the raid can time the kill. The zone
+-- itself says KILL (textures\kill), so the label is only which star and how much is left.
+CP.StarKillPicks = {}
+-- CP.StarHP(mark): the health % of the star wearing a mark, set by the boss mod while there are stars
+local function starKillText(w, t)
+	local marks, picks = {}, CP.StarKillPicks[w.index] or {}
+	for k = 1, math.max(w.kills, 1) do
+		local p = picks[k]
+		if p and t >= (p.at or 0) then
+			local mark = ("|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_%d:0|t"):format(p.mark)
+			local hp = CP.PickHP(p, t)
+			marks[k] = hp and ("%s %d%%"):format(mark, math.max(0, hp) + 0.5) or mark
+		else
+			marks[k] = "?"
+		end
+	end
+	if w.expires then return marks[1] end -- no KILL behind it: a star to leave alone
+	-- two kills read in order, the raid healing back up between the explosions
+	if w.kills == 2 then return ("%s, Heal, %s"):format(marks[1], marks[2]) end
+	return marks[1]
+end
 local LANES_TOP = PAD + TAG_H + 1	-- one row for the tank tags, then the lanes
--- the tags and the AoE lane's ramps reach the border's inner edge (where the lines start too) rather than leaving the
--- padding dark: a tag up into the top padding, a ramp down into the bottom one
+-- a band of the dark frame between the tag row, the two lanes and the ruler row, so no lane's bars run into the next
+local LANE_GAP = 4
+-- the ruler row under the AoE lane: seconds ahead of the now line, 0 to STRIP_SPAN every RULER_EVERY, each with a
+-- faint line from the top border to the bottom one; under everything else, so nothing it would cover
+local RULER_H, RULER_EVERY, RULER_ALPHA = 12, 5, 0.16
+-- a lane's top below the first lane's
+local function laneY(lane) return (lane - 1) * (LANE_H + LANE_GAP) end
+local LANES_BOTTOM = LANES_TOP + LANE_GAP + laneY(2) + LANE_H	-- where the lines stop, above the ruler row
+-- the tags reach the border's inner edge (where the lines start too) rather than leaving the top padding dark; the
+-- AoE lane's ramps reach a unit into the gap under it
 local BORDER_IN = 3
-local TAG_LIFT, RAMP_DOWN = PAD - BORDER_IN, PAD - BORDER_IN
+local TAG_LIFT, RAMP_DOWN = PAD - BORDER_IN, 1
 -- a tag's colour, from the border down to the top of the Tank lane's blocks: those show about 1.4 units below their
 -- anchor (the lanes' scroll frame; measured on screenshots), so a tag sized to the anchor left a 2px dark band
 local TAG_BG = LANES_TOP + 1 - BORDER_IN + 1
@@ -1603,7 +1793,7 @@ function showStrip(rows, period, t, hasTanks)
 	end
 	if not strip then
 		strip = CreateFrame("Frame", "DBMCooldownPlanStrip", UIParent)
-		strip:SetSize(LABEL_W + STRIP_W + 2 * PAD + 4, LANES_TOP + 2 * LANE_H + PAD)
+		strip:SetSize(LABEL_W + STRIP_W + 2 * PAD + 4, LANES_BOTTOM + LANE_GAP + RULER_H + PAD)
 		strip:SetBackdrop({
 			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
 			tile = true, tileSize = 16, insets = {left = 4, right = 4, top = 4, bottom = 4},
@@ -1624,17 +1814,35 @@ function showStrip(rows, period, t, hasTanks)
 		for i = 1, 2 do
 			strip.names[i] = strip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 			strip.names[i]:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
-			strip.names[i]:SetPoint("LEFT", strip, "TOPLEFT", NAME_X, -LANES_TOP - (i - 1) * LANE_H - LANE_H / 2)
+			strip.names[i]:SetPoint("LEFT", strip, "TOPLEFT", NAME_X, -LANES_TOP - LANE_GAP - laneY(i) - LANE_H / 2)
+		end
+		-- the ruler: its lines on the strip itself, under the lanes and everything in them; its numbers in their row
+		local x0 = LABEL_W + PAD + 2
+		for k = 0, STRIP_SPAN, RULER_EVERY do
+			local at = x0 + k * STRIP_W / STRIP_SPAN
+			if k > 0 and k < STRIP_SPAN then
+				local l = strip:CreateTexture(nil, "ARTWORK")
+				l:SetTexture(1, 1, 1, RULER_ALPHA)
+				l:SetPoint("TOPLEFT", at, -BORDER_IN)
+				l:SetSize(1, LANES_BOTTOM + LANE_GAP + RULER_H + PAD - 2 * BORDER_IN)
+			end
+			local n = strip:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			n:SetFont(STANDARD_TEXT_FONT, 9, "OUTLINE")
+			n:SetTextColor(1, 1, 1, 0.6)
+			n:SetText(k)
+			-- 0 starts at the now line and the last ends at the strip's edge; the rest sit centred on their second
+			local point = k == 0 and "LEFT" or k == STRIP_SPAN and "RIGHT" or "CENTER"
+			n:SetPoint(point, strip, "TOPLEFT", at + (k == 0 and 3 or k == STRIP_SPAN and -2 or 0), -(LANES_BOTTOM + LANE_GAP + RULER_H / 2))
 		end
 		-- the lanes are clipped from the now line on, so a cooldown running out slides away under it whole,
 		-- border and label, rather than shrinking to a stub; its blocks reach to about level +5, so the
 		-- smash and swap lines go just above them, the tags above those
 		strip.laneClip = CreateFrame("ScrollFrame", nil, strip)
-		strip.laneClip:SetPoint("TOPLEFT", LABEL_W + PAD + 2, -LANES_TOP)
-		strip.laneClip:SetSize(STRIP_W + 2, 2 * LANE_H + RAMP_DOWN)
+		strip.laneClip:SetPoint("TOPLEFT", LABEL_W + PAD + 2, -LANES_TOP - LANE_GAP)
+		strip.laneClip:SetSize(STRIP_W + 2, laneY(2) + LANE_H + RAMP_DOWN)
 		strip.laneClip:SetFrameLevel(strip:GetFrameLevel() + 1)
 		strip.laneRow = CreateFrame("Frame", nil, strip.laneClip)
-		strip.laneRow:SetSize(STRIP_W + 2, 2 * LANE_H + RAMP_DOWN)
+		strip.laneRow:SetSize(STRIP_W + 2, laneY(2) + LANE_H + RAMP_DOWN)
 		strip.laneClip:SetScrollChild(strip.laneRow)
 		-- trinkets on their own layer under the other cooldowns (each block's subtree is three levels deep), so
 		-- one overlapping a cooldown is always the one hidden, never drawn in whatever order the pool gives
@@ -1645,6 +1853,7 @@ function showStrip(rows, period, t, hasTanks)
 		strip.laneHigh:SetFrameLevel(strip.laneLow:GetFrameLevel() + 4)
 		strip.trinkets = {used = 0}
 		strip.ramps = {used = 0}	-- {ramp texture, label} per Cosmic Smash or Big Bang in view
+		strip.safes = {}	-- three stripe textures per Star kill safe window in view
 		strip.lineLayer = CreateFrame("Frame", nil, strip)
 		strip.lineLayer:SetAllPoints()
 		strip.lineLayer:SetFrameLevel(strip.laneHigh:GetFrameLevel() + 4) -- above the cooldowns' subtrees
@@ -1671,11 +1880,27 @@ function showStrip(rows, period, t, hasTanks)
 			end
 		end
 	end
+	-- Star kill safe windows, while there are stars (the boss sets CP.StarKillSafe; the mock fight shows them
+	-- too). None in a gap a Big Bang lands in, where a star dying explodes on a raid not yet phased
+	strip.s.safes = (CP.StarKillSafe or active and active.test) and CP.LiveWindows(t - 1, t + STRIP_SPAN + 1, t) or {}
 	drawStrip(t)
 	strip:Show()
 end
 
 -- the timeline placed at fight time t, from what showStrip last worked out: cheap enough for every frame
+-- Where a strip label starts, for a block left..right and a label w wide, with the lanes from nowX (the now line)
+-- to stripRight. A cooldown's rests inset in and, sliding out under the now line, stays just past it until the
+-- block's right edge catches it and pushes it off too (5 clear of the next label). A centered one (a star kill
+-- window) sits mid-block whenever it fits: coming in it rides the block's start, then holds at the strip's right
+-- edge, so it reads from the moment it shows; going out it holds at the now line the same way.
+function CP.LabelAt(left, right, w, nowX, stripRight, inset, center)
+	inset = inset or 3
+	if not center then return math.max(left + inset, math.min(nowX + 3, right - 5 - w)) end
+	local at = math.min((left + right - w) / 2, stripRight - 5 - w)
+	at = math.min(math.max(at, nowX + 3), right - 5 - w)
+	return math.max(at, left + inset)
+end
+
 function drawStrip(t)
 	local s = strip.s
 	local stop = t + STRIP_SPAN
@@ -1692,10 +1917,11 @@ function drawStrip(t)
 	local perSecond = STRIP_W / STRIP_SPAN * ppu	-- pixels
 	local nowPx = math.floor(t * perSecond + 0.5)
 	local function x(time) return x0 + (math.floor(time * perSecond + 0.5) - nowPx) / ppu end
-	local function block(lane, from, to, color, a, text, mine, low, textAlpha)
+	-- inset: where the label rests from the block's start (default 3); center: see CP.LabelAt
+	local function block(lane, from, to, color, a, text, mine, low, textAlpha, inset, center)
 		local p = low and stripPart(strip.trinkets, "low") or stripPart(strip.blocks)
 		p:ClearAllPoints()
-		p:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(from) - x0, -(lane - 1) * LANE_H - 1)
+		p:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(from) - x0, -laneY(lane) - 1)
 		p:SetSize(math.max(1, x(to) - x(from)), LANE_H - 1)
 		p.child:SetHeight(LANE_H - 1)
 		p:SetBackdropColor(color[1], color[2], color[3], a)
@@ -1703,10 +1929,8 @@ function drawStrip(t)
 		p.text:SetFont("Fonts\\ARIALN.TTF", 12, "OUTLINE") -- narrow, so a caster's name fits beside the spell
 		p.text:SetText(text or "")
 		p.text:SetTextColor(1, 1, 1, textAlpha or 1)
-		-- a bar sliding out under the now line keeps its label readable just past the line, until the bar's
-		-- right edge catches it and pushes it off too
 		local left, right = x(from), x(to) - 1
-		local at = math.max(left + 3, math.min(x0 + 3, right - 5 - p.text:GetStringWidth())) -- 5px clear of the next label
+		local at = CP.LabelAt(left, right, p.text:GetStringWidth(), x0, x0 + STRIP_W, inset, center)
 		-- the label's own clip starts at the now line: the lanes' clip doesn't reach into it
 		local clipFrom = math.max(left + 3, x0)
 		p.clip:ClearAllPoints()
@@ -1720,7 +1944,7 @@ function drawStrip(t)
 		local l = swap and stripPart(strip.swapLines, "swap") or stripPart(strip.lines, "line")
 		l:ClearAllPoints()
 		l:SetPoint("TOPLEFT", x(time), -3) -- into the border, which covers its ends, like the now line
-		l:SetSize(2, LANES_TOP + 2 * LANE_H + PAD - 6)
+		l:SetSize(2, LANES_BOTTOM - 3)
 		l:SetTexture(r, g, b, 0.6) -- see-through enough to read a label behind it
 	end
 	for i, lane in ipairs(s.lanes) do
@@ -1746,14 +1970,14 @@ function drawStrip(t)
 		strip.ramps.used = strip.ramps.used + 1
 		local left, right = x(land - cast), x(land)
 		p.tex:ClearAllPoints()
-		p.tex:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", left - x0, -LANE_H - 1)
+		p.tex:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", left - x0, -laneY(2) - 1)
 		p.tex:SetSize(math.max(1, right - left), LANE_H - 1 + RAMP_DOWN)
 		p.tex:SetGradientAlpha("HORIZONTAL", color[1], color[2], color[3], 0, color[1], color[2], color[3], 0.85)
 		p.tex:Show()
 		p.text:SetText(name)
 		p.text:SetTextColor(textColor[1], textColor[2], textColor[3])
 		p.text:ClearAllPoints()
-		p.text:SetPoint("LEFT", strip.laneRow, "TOPLEFT", right - x0 + 2, -LANE_H - (LANE_H + RAMP_DOWN) / 2) -- centred in the ramp
+		p.text:SetPoint("LEFT", strip.laneRow, "TOPLEFT", right - x0 + 2, -laneY(2) - (LANE_H + RAMP_DOWN) / 2) -- centred in the ramp
 		p.text:Show()
 	end
 	for _, h in ipairs(s.smashes) do
@@ -1763,6 +1987,95 @@ function drawStrip(t)
 	for _, h in ipairs(s.bangs) do
 		ramp(h, CP.BANG_CAST, BANG_COLOR, BANG_TEXT, "Big Bang")
 		if h >= t and h < stop then line(h, BANG_LINE[1], BANG_LINE[2], BANG_LINE[3]) end
+	end
+	-- Star kill safe: green stripes in the AoE lane fading in and out at both ends, under a bare block whose
+	-- label rides the now line and slides out like a cooldown's
+	for i, w in ipairs(s.safes) do
+		local p = strip.safes[i]
+		if not p then
+			p = {}
+			for k = 1, 3 do
+				p[k] = strip.laneLow:CreateTexture(nil, "ARTWORK")
+				p[k]:SetTexture("Interface\\AddOns\\DBM-Core\\textures\\stripes")
+			end
+			p.ticks = {}
+			p.kill = strip.laneLow:CreateTexture(nil, "OVERLAY") -- over the stripes, under the label
+			p.kill:SetTexture("Interface\\AddOns\\DBM-Core\\textures\\kill")
+			p.kill:SetVertexColor(KILL_COLOR[1], KILL_COLOR[2], KILL_COLOR[3], KILL_ALPHA)
+			strip.safes[i] = p
+		end
+		-- a star left to run out: a line at that moment and its name after it, no stripes
+		if w.expires then
+			-- in the AoE row only, unlike the smash and Big Bang lines across the strip; at the star's own death if
+			-- damage has brought that sooner than its run-out
+			p[2]:Hide() p[3]:Hide() p.kill:Hide()
+			for _, tick in ipairs(p.ticks) do tick:Hide() end
+			local pick = (CP.StarKillPicks[w.index] or {})[1]
+			local hp = pick and t >= (pick.at or 0) and CP.PickHP(pick, t)
+			local at = math.min(w.from, hp and hp > 0 and t + (CP.StarDeathIn and CP.StarDeathIn(pick.mark) or hp) or w.from)
+			p[1]:ClearAllPoints()
+			p[1]:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(at) - x0 - 1, -laneY(2) - 1 - DEATH_EDGE)
+			p[1]:SetSize(2, LANE_H - 1 - 2 * DEATH_EDGE)
+			p[1]:SetTexture(DEATH_COLOR[1], DEATH_COLOR[2], DEATH_COLOR[3], 1)
+			p[1]:SetTexCoord(0, 1, 0, 1)
+			p[1]:SetGradientAlpha("HORIZONTAL", 1, 1, 1, 1, 1, 1, 1, 1)
+			p[1]:Show()
+			block(2, at, at + 10, SAFE_COLOR, 0, starKillText(w, t), false, nil, 1)
+		else
+		local left, width = x(w.from), x(w.to) - x(w.from)
+		local fade = math.min(SAFE_FADE, width / 2)
+		local edges = {0, fade, width - fade, width}
+		local r, g, b = SAFE_COLOR[1], SAFE_COLOR[2], SAFE_COLOR[3]
+		for k = 1, 3 do
+			local tex, from, to = p[k], edges[k], edges[k + 1]
+			tex:SetTexture("Interface\\AddOns\\DBM-Core\\textures\\stripes") -- a marker may have had it last
+			tex:ClearAllPoints()
+			tex:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", left - x0 + from, -laneY(2) - 1)
+			tex:SetSize(math.max(to - from, 0.01), LANE_H - 1)
+			-- the 512x64 texture at 2 texels a unit from the window's start, so the stripes ride with it
+			tex:SetTexCoord(from * 2 / 512, to * 2 / 512, 0, (LANE_H - 1) * 2 / 64)
+			tex:SetGradientAlpha("HORIZONTAL", r, g, b, k == 1 and 0 or SAFE_ALPHA, r, g, b, k == 3 and 0 or SAFE_ALPHA)
+			tex:Show()
+		end
+		p.kill:ClearAllPoints()
+		p.kill:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", left - x0 + KILL_SIDE, -laneY(2) - 1 - KILL_EDGE)
+		p.kill:SetSize(math.max(width - 2 * KILL_SIDE, 0.01), LANE_H - 1 - 2 * KILL_EDGE)
+		p.kill:Show()
+		-- each named star's death if left alone from here: in the zone, or before it as a warning, never after it
+		local picks, early = CP.StarKillPicks[w.index] or {}, nil
+		for k = 1, math.max(w.kills, #p.ticks) do
+			local pick, tick = picks[k], p.ticks[k]
+			local hp = k <= w.kills and pick and t >= (pick.at or 0) and CP.PickHP(pick, t)
+			-- the star's own death time when the boss mod has it (exact on its 1s Collapse ticks, so it holds still
+			-- between them), else its health in seconds
+			local dies = hp and hp > 0 and t + (CP.StarDeathIn and CP.StarDeathIn(pick.mark) or hp)
+			if dies and dies <= w.to then
+				if not tick then
+					tick = strip.laneLow:CreateTexture(nil, "OVERLAY")
+					tick:SetTexture(DEATH_COLOR[1], DEATH_COLOR[2], DEATH_COLOR[3], 1)
+					p.ticks[k] = tick
+				end
+				tick:ClearAllPoints()
+				tick:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", x(dies) - x0 - 1, -laneY(2) - 1 - DEATH_EDGE)
+				tick:SetSize(2, LANE_H - 1 - 2 * DEATH_EDGE)
+				tick:Show()
+				if dies < w.from then early = math.min(early or dies, dies) end
+			elseif tick then
+				tick:Hide()
+			end
+		end
+		-- the label rides the zone, unless a star is going down before it: then it follows that tick, as a marker's
+		if early then
+			block(2, early, early + 10, SAFE_COLOR, 0, starKillText(w, t), false, nil, 1)
+		else
+			block(2, w.from, w.to, SAFE_COLOR, 0, starKillText(w, t), false, nil, 1, SAFE_INSET, true)
+		end
+		end
+	end
+	for i = #s.safes + 1, #strip.safes do
+		for k = 1, 3 do strip.safes[i][k]:Hide() end
+		strip.safes[i].kill:Hide()
+		for _, tick in ipairs(strip.safes[i].ticks) do tick:Hide() end
 	end
 	for _, w in ipairs(s.swaps) do
 		if w > t and w < stop then line(w, 1, 0.82, 0, true) end
@@ -1784,7 +2097,7 @@ function drawStrip(t)
 		-- into the border above and below, which covers its ends; wider than the lines it stands among, grown
 		-- leftwards so the tags still go under it. Opaque grey, light in the middle and darker towards both ends,
 		-- so it isn't a hard white bar: a gradient only runs between two ends, so it's three pieces
-		local span = LANES_TOP + 2 * LANE_H + PAD - 6
+		local span = LANES_BOTTOM + LANE_GAP + RULER_H + PAD - 6 -- the whole strip, the ruler row too: 0 is at it
 		local fade = span * 0.38
 		local MID, TIP = 0.55, 0.25
 		local function piece(from, height)
@@ -1807,7 +2120,8 @@ function drawStrip(t)
 	-- tag comes in over the current one, and settles as the same frame, never handing over to another. Layers
 	-- count from the oldest tag in view, so a long fight's swap numbers never climb over the now line
 	local base = s.lastSwap and math.max(0, s.lastSwap.number - 1) or 0
-	local function tag(number, name, px, swap)
+	-- limit: where a tag coming in over this one starts, so this one never shows past it on the right
+	local function tag(number, name, px, swap, limit)
 		if name == "" and not swap then return px end -- no tank to name
 		local p = strip.tagFrames[number]
 		if not p then
@@ -1829,7 +2143,7 @@ function drawStrip(t)
 		p.text:SetText(swap and (name ~= "" and "Swap \194\183 " .. name or "Swap") or name)
 		p.text:SetTextColor(1, 1, 1) -- the outline keeps white readable on any class colour
 		local w = p.text:GetStringWidth() + 6
-		local left, right = math.max(px, 0), math.min(px + w, STRIP_W + 2) -- the now line and the strip's edge
+		local left, right = math.max(px, 0), math.min(px + w, STRIP_W + 2, limit or math.huge) -- the now line and the strip's edge
 		p:SetFrameLevel(strip.tagRow:GetFrameLevel() + 1 + 3 * (number - base))
 		p:ClearAllPoints()
 		p:SetPoint("TOPLEFT", left, 0)
@@ -1858,15 +2172,17 @@ function drawStrip(t)
 	-- the current tank's tag: the latest swap's, stopped where its "Swap · " has gone under the now line, or the
 	-- pull's; while that swap's tag is still sliding in, the one it covers stays under it
 	local last, first = s.lastSwap, s.lanes[1].tags[1]
+	local coming = s.lanes[1].tags[2]
+	local comingAt = coming and x(coming.time) - x0 + 2 -- the next swap's tag, sliding in over the current one
 	if last then
 		local settled = settledFor(last.to)
 		local px = math.max(x(last.time) - x0 + 2, settled)
-		tag(last.number, last.to, px, true)
+		tag(last.number, last.to, px, true, comingAt)
 		if px > settled then
-			if last.number > 1 then tag(last.number - 1, last.from, settledFor(last.from), true) else tag(0, last.from, 0, false) end
+			if last.number > 1 then tag(last.number - 1, last.from, settledFor(last.from), true, px) else tag(0, last.from, 0, false, px) end
 		end
 	elseif first then
-		tag(0, first.name, 0, false)
+		tag(0, first.name, 0, false, comingAt)
 	end
 	for i, tg in ipairs(s.lanes[1].tags) do
 		if i > 1 then tag(tg.number, tg.name, x(tg.time) - x0 + 2, true) end
@@ -1995,6 +2311,7 @@ function CP.TestFight(mod, misuse)
 	active = {rows = rows, test = true, classes = {Onaqui = "DEATHKNIGHT", Dracohouston = "PALADIN", [me] = "PALADIN",
 		Stickboard = "PALADIN", Illithris = "PALADIN", Halosylvan = "PRIEST"}, pool = pool, weaker = "Dracohouston", skip = {}, script = {}}
 	pullTime = GetTime() + 8.5
+	CP.StarKillPicks = CP.MockStarPicks()
 	wipe(done)
 	fight = {uses = {}, dead = {}, missed = {}}
 	if misuse then
