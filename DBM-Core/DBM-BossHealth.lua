@@ -220,7 +220,7 @@ local function drawSegments(bar, barbar, segs)
 	for i = n + 1, #bar.segs do bar.segs[i]:Hide() end
 end
 
--- style (generic bars only): {segs = see drawSegments, text = shown before the percent}
+-- style (generic bars only): {segs = see drawSegments, text = shown before the percent, bg = background alpha}
 function updateBar(bar, percent, icon, dontShowDead, name, style)
 	if not percent then return end
 	local barName = bar:GetName()
@@ -259,6 +259,8 @@ function updateBar(bar, percent, icon, dontShowDead, name, style)
 	if name and not bar.nameused then
 		bartext:SetText(name)
 	end
+	-- a bar reused from the pool must lose another boss's darker background
+	_G[barName .. "BarBackground"]:SetTexture(0, 0, 0, style and style.bg or 0.3)
 	if style and style.segs then barbar:SetValue(0) end
 	drawSegments(bar, barbar, style and style.segs)
 	if style and style.valueText then bartimer:SetText(style.valueText) end -- in place of the percent
@@ -278,9 +280,9 @@ function updateBar(bar, percent, icon, dontShowDead, name, style)
 		end
 		placeAllBars()
 	end
-	-- generic bars can mark their name (an icon after it) and drop the mark again
-	if style and style.nameSuffix then
-		bartext:SetText((bar.baseName or "") .. style.nameSuffix)
+	-- generic bars can mark their name (an icon after it) or show another name, and go back again
+	if style and (style.name or style.nameSuffix) then
+		bartext:SetText(style.name or (bar.baseName or "") .. style.nameSuffix)
 		bar.suffixed = true
 	elseif bar.suffixed then
 		bartext:SetText(bar.baseName or "")

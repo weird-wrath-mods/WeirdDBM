@@ -160,23 +160,35 @@ end
 -- A star named for a kill zone: the health to take off to have it die by itself before the zone ends, in yellow
 -- at the top of the bar and as a number before the percent. The bar is in seconds until it dies alone (starBarPct),
 -- so that's down to (zone end - now) on it, and both fall 1% a second from there: a star brought into the green
--- stays there and dies in the zone. Taken below (zone start - now) it would die before the zone: red.
+-- stays there and dies in the zone. Taken below (zone start - now) it would die before the zone: red. The bar is
+-- smooth but the star dies on a whole-second tick, up to 1s after the bar says, so the yellow reaches a tick
+-- further down: all of it taken off, it dies inside the zone, and the timeline shows it there.
 local function zoneBar(s, h, w, t)
 	if h < w.from - t then return starStyle(s, h, RED) end
-	local top = math.max(w.to - t, 0)
+	local top = math.max(w.to - t - 1, 0)
 	if h <= top then return starStyle(s, h, GREEN) end
 	return h, s.icon, {segs = {seg(0, top, GREEN), seg(top, h, YELLOW)}, text = "|cff5aa0ff" .. kHP((h - top) * starMax * 0.01) .. "|r"}
 end
 
-local function starBarValue(s)
-	if not s then return 0 end -- empty bar
-	local now = GetTime()
+local function starBarLook(s, now)
 	local hp = starHP(s, now)
 	if hp <= 0 then return 0, s.icon end
 	local h = math.max(starBarPct(s, now, hp), 0)
 	local zone, t = starZone(s)
 	if zone then return zoneBar(s, h, zone, t) end
 	return starStyle(s, h, GREEN)
+end
+
+-- The spawn timing says a star is up before anyone has pointed at it: until one of ours does, it has no mark
+-- The bars sit by the timeline: their background as dark as its strip
+local STAR_BAR_BG = 0.75
+local function starBarValue(s)
+	if not s then return 0, nil, {bg = STAR_BAR_BG} end -- empty bar
+	local h, icon, style = starBarLook(s, GetTime())
+	style = style or {}
+	style.bg = STAR_BAR_BG
+	if not icon and h > 0 then style.name = L.StarBarUnmarked end
+	return h, icon, style
 end
 
 -- A star takes the first free bar; with more than 4 known at once (a misjudged wave) it goes unshown
@@ -307,10 +319,15 @@ local function starDied(guid, now)
 	starDiedAt[guid] = now
 end
 
--- A unit read is the HP right now: taken as is
+-- A unit read is the HP right now. Like a sync it only ever lowers a star's damage HP: one that would raise it is a
+-- health update a moment behind a hit the log already counted, or the server's Collapse tick a moment off ours,
+-- and taking it would bounce the bar and the timeline's death tick by a tick. A star without a tick schedule has no
+-- count of its own to keep: its reads are taken as is.
 local function readStar(guid, hp, now)
 	local s = getStar(guid, now)
-	if s and not s.dead then s.hp = hp + collapsed(s, now) end
+	if not s or s.dead then return end
+	local damageHP = hp + collapsed(s, now)
+	if not s.scheduled or damageHP < s.hp then s.hp = damageHP end
 end
 
 -- Another client's damage HP: lower means it saw damage we missed. A star without a tick schedule

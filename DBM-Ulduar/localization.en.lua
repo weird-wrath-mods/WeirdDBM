@@ -165,6 +165,7 @@ L:SetMiscLocalization({
 	StarBar2				= "Two",
 	StarBar3				= "Three",
 	StarBar4				= "Four",
+	StarBarUnmarked			= "Mouseover Stars to Mark",
 	PullCheck				= "Time until Algalon transmits distress signal= (%d+) min."
 })
 
