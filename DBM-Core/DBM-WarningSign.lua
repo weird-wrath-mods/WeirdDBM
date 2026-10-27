@@ -44,9 +44,15 @@ function sign:UpdatePosition()
 	frame:SetScale(o.WarningSignScale)
 end
 
+-- whole seconds, then tenths under 10 so the last seconds count down to 0.0; rounded down, so 10 goes to 9.9
+local function countdown(left)
+	if left >= 10 then return math.floor(left) end
+	return ("%.1f"):format(math.floor(left * 10) / 10)
+end
+
 frame:SetScript("OnUpdate", function(self)
 	local left = endTime - GetTime()
-	timeText:SetText(timed and left > 0 and math.ceil(left) or "")
+	timeText:SetText(timed and left > 0 and countdown(left) or "")
 	if left <= 0 then
 		shown = nil
 		moving = nil
