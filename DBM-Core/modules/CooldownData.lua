@@ -50,7 +50,7 @@ private.cooldownData = {
 	[64205] = {buff = 70940, dur = 6, cd = 120, power = 20, role = "ext", class = "PALADIN", needs = 53527, raid = true, mods = { -- Divine Sacrifice
 		{field = "power", flat = -10, talent = 53527, rank = 1}, -- Divine Guardian 1/2
 	}},
-	[48788] = {buff = 20236, dur = 15, cd = 1200, power = 20, role = "ext", class = "PALADIN", needs = 20234, mods = { -- Lay on Hands
+	[48788] = {buff = 20236, dur = 15, cd = 1200, power = 20, role = "ext", class = "PALADIN", needs = 20234, heals = true, mods = { -- Lay on Hands
 		{field = "cd", flat = -120, talent = 20234, rank = 1}, -- Improved Lay on Hands
 		{field = "cd", flat = -240, talent = 20234, rank = 2}, -- Improved Lay on Hands
 		{field = "cd", flat = -240, sets = {{pieces = 4, items = {22424, 22425, 22426, 22427, 22428, 22429, 22430, 22431, 23066}} --[[ Redemption Armor ]]}}, -- Lay Hands

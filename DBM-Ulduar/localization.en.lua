@@ -169,6 +169,7 @@ L:SetMiscLocalization({
 	StarBar4				= "Four",
 	StarBarUnmarked			= "Mouseover Stars to Mark",
 	StarBarIgnore			= "Ignore",
+	Planetarium				= "The Celestial Planetarium", -- his room's subzone (WMOAreaTable.dbc)
 	PullCheck				= "Time until Algalon transmits distress signal= (%d+) min."
 })
 

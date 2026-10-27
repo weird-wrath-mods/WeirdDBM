@@ -27,7 +27,10 @@ DBM.CooldownPlan.Prepare(mod) -- the raid leader's plan, made now and again on e
 
 mod:RegisterEvents(
 	"CHAT_MSG_MONSTER_YELL",
-	"UPDATE_WORLD_STATES"
+	"UPDATE_WORLD_STATES",
+	"UPDATE_MOUSEOVER_UNIT",
+	"ZONE_CHANGED",
+	"ZONE_CHANGED_INDOORS"
 )
 
 mod:RegisterEventsInCombat(
@@ -725,6 +728,17 @@ function mod:CHAT_MSG_RAID_BOSS_EMOTE(msg)
 		addStarWave(GetTime())
 	end
 end
+
+-- the raid leader hears before the pull when the plan won't find its two tanks: on reaching his room (and which two
+-- it found, when it does), and on each look at him (a warning only; CooldownPlan.lua's CheckTanks keeps it to every 5s)
+function mod:UPDATE_MOUSEOVER_UNIT()
+	if self:GetUnitCreatureId("mouseover") == 32871 then DBM.CooldownPlan.CheckTanks(self) end
+end
+
+function mod:ZONE_CHANGED()
+	if GetSubZoneText() == L.Planetarium then DBM.CooldownPlan.CheckTanks(self, true) end
+end
+mod.ZONE_CHANGED_INDOORS = mod.ZONE_CHANGED
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
 	if matches(msg, L.Phase2) then

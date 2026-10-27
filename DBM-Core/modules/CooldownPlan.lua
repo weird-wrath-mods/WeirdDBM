@@ -14,7 +14,7 @@ local data, trinkets = private.cooldownData, private.cooldownTrinkets
 local PREFIX = "DBMCD"
 local CHECKAHEAD = 5	-- seconds before a use that its readiness is checked
 
-local defaultByName, roleByName, raidByName, trinketByName, smashOnlyByName, notSelfByName = {}, {}, {}, {}, {}, {}	-- by localized cast name, filled at load
+local defaultByName, roleByName, raidByName, trinketByName, smashOnlyByName, notSelfByName, healsByName = {}, {}, {}, {}, {}, {}, {}	-- by localized cast name, filled at load
 
 -- [cast spell] = {dur, cd, power} for what this player has, given has.knows(cast), has.talent(first rank
 -- spell) -> rank, has.glyph(spell), has.pieces(items) -> equipped count, has.defense() and
@@ -646,9 +646,19 @@ local function build(opts, rng, smashRng)
 				if c.role == "big" and c.player == who and free(i, press) then pick = i break end
 			end
 			if not pick then
+				-- the longest one ready; one that heals as it goes up (Lay on Hands) only when nothing near as strong is: the
+				-- tank coming in is at full health, and later in their stint its heal lands on damage
+				local NEAR, heal = 5, nil
 				for i, c in ipairs(pool) do
-					if usable(c, who) and c.role ~= "bubble" and not c.raid and not c.trinket and free(i, press) and bubble(i, press) and not covers(who, press, press + c.dur) and (not pick or c.dur > pool[pick].dur) then pick = i end
+					if usable(c, who) and c.role ~= "bubble" and not c.raid and not c.trinket and free(i, press) and bubble(i, press) and not covers(who, press, press + c.dur) then
+						if c.heals then
+							if not heal or c.dur > pool[heal].dur then heal = i end
+						elseif not pick or c.dur > pool[pick].dur then
+							pick = i
+						end
+					end
 				end
+				if heal and (not pick or (pool[pick].power or 0) + NEAR < (pool[heal].power or 0)) then pick = heal end
 				problems[#problems + 1] = ("%s has no big cooldown ready at %s"):format(who, s > 1 and ("the swap at " .. round(at) .. "s") or "the pull")
 				bigMissed = bigMissed + 1
 			end
@@ -892,7 +902,7 @@ function CP.Replan(opts)
 			local readyAt = c.readyAt or 0
 			if last[key] then readyAt = math.max(readyAt, last[key] + c.cd) end
 			if missed[key] then readyAt = math.max(readyAt, missed[key] + NOSHOW_WAIT) end
-			pool[#pool + 1] = {player = c.player, spell = c.spell, dur = c.dur, cd = c.cd, power = c.power, role = c.role, raid = c.raid, trinket = c.trinket, smashOnly = c.smashOnly, notSelf = c.notSelf, readyAt = readyAt}
+			pool[#pool + 1] = {player = c.player, spell = c.spell, dur = c.dur, cd = c.cd, power = c.power, role = c.role, raid = c.raid, trinket = c.trinket, smashOnly = c.smashOnly, notSelf = c.notSelf, heals = c.heals, readyAt = readyAt}
 		end
 	end
 	local from, tank = now + LOCK, opts.tank or 1
@@ -1365,23 +1375,29 @@ local function roster(origin)
 			for spell, r in pairs(reported[name] or {}) do
 				local role = roleByName[spell]
 				if role and r.dur and r.cd then
+					-- mine aren't reported (my own messages don't come back to me): when they're back, from my own cooldowns
+					local readyAt = name == playerName and now + readyIn(spell) or r.readyAt or now
 					pool[#pool + 1] = {player = name, spell = spell, dur = r.dur, cd = r.cd, power = r.power or defaultByName[spell][3],
-						role = role, raid = raidByName[spell], trinket = trinketByName[spell], smashOnly = smashOnlyByName[spell], notSelf = notSelfByName[spell], readyAt = math.max(0, (r.readyAt or now) - origin)}
+						role = role, raid = raidByName[spell], trinket = trinketByName[spell], smashOnly = smashOnlyByName[spell], notSelf = notSelfByName[spell],
+						heals = healsByName[spell], readyAt = math.max(0, readyAt - origin)}
 				end
 			end
 		end
 	end
-	for _, name in ipairs(assists) do tanks[#tanks + 1] = name end
-	-- short of two flagged: those whose own talents say tank (T), the best geared first, so they take the pull
-	if #tanks < 2 then
-		local flagged = {}
-		for _, name in ipairs(tanks) do flagged[name] = true end
-		table.sort(selfTanks, function(a, b)
-			if a.ilvl ~= b.ilvl then return a.ilvl > b.ilvl end
-			return a.order < b.order
-		end)
-		for _, t in ipairs(selfTanks) do if not flagged[t.name] then tanks[#tanks + 1] = t.name end end
-	end
+	-- the Main Tank is tank 1 (the pull) and the Main Assist tank 2; a place left empty goes to those whose own talents
+	-- say tank (T), the best geared first
+	local flagged, fill = {}, {}
+	for _, name in ipairs(tanks) do flagged[name] = true end
+	for _, name in ipairs(assists) do flagged[name] = true end
+	table.sort(selfTanks, function(a, b)
+		if a.ilvl ~= b.ilvl then return a.ilvl > b.ilvl end
+		return a.order < b.order
+	end)
+	for _, t in ipairs(selfTanks) do if not flagged[t.name] then fill[#fill + 1] = t.name end end
+	local first, second = tanks[1] or table.remove(fill, 1), assists[1] or table.remove(fill, 1)
+	tanks = {}
+	for _, name in ipairs({first or false, second or false}) do if name then tanks[#tanks + 1] = name end end
+	for _, name in ipairs(fill) do tanks[#tanks + 1] = name end
 	table.sort(pool, function(a, b) return a.player .. a.spell < b.player .. b.spell end) -- same plan on every client
 	local by = {}
 	for _, c in ipairs(pool) do by[c.player] = (by[c.player] or 0) + 1 end
@@ -1713,14 +1729,50 @@ local autoFor = {}
 local function ownsAuto(id)
 	return autoFor[id] and DBM:GetRaidRank() == 2 and (saved.auto[id] or not saved.plans[id])
 end
--- origin: the time cooldowns are counted ready from (plan time 0)
-local function autoPlan(id, origin)
+-- what to say when the tanks found (roster) aren't two, else nil; only clients with the cooldown plan answer the ask,
+-- so a tank on an older DBM reports nothing
+function CP.TankWarning(id, tanks)
+	if #tanks >= 2 then return end
+	return ("Cooldown plan for %s needs two tanks, and %s. Set Main Tank and Main Assist in the raid frame, or a tank's own talents must say tank."):format(
+		id, #tanks == 1 and ("only " .. tanks[1] .. " is one") or "none was found")
+end
+
+-- The raid leader's early warning that the tanks aren't set up (a boss module calls it when the raid gets near: its
+-- room, the boss moused over): asks everyone, then finds the tanks as the plan will. Never in combat, when it's too
+-- late to matter. sayTanks (reaching the room): which two it found goes to chat too, and it runs whatever the last
+-- check; otherwise (a mouseover, again and again) only a warning, and not more than every 5s.
+function CP.CheckTanks(mod, sayTanks)
+	local CHECK_EVERY = 5
+	if AOE_ONLY or not saved or not DBM.Options.CooldownPlanEnabled or DBM:GetRaidRank() ~= 2 or GetNumRaidMembers() == 0
+		or mod:IsInCombat() or (not sayTanks and mod.tankCheckAt and GetTime() - mod.tankCheckAt < CHECK_EVERY) then
+		return
+	end
+	mod.tankCheckAt = GetTime()
+	send("Q")
+	DBM:Schedule(AUTO_WAIT, function()
+		local _, tanks = roster(GetTime())
+		local text = CP.TankWarning(tostring(mod.id):lower(), tanks)
+		if text then
+			RaidNotice_AddMessage(RaidWarningFrame, text, ChatTypeInfo["RAID_WARNING"])
+			DBM:AddMsg(text)
+		elseif sayTanks then
+			local function colored(name)
+				local cc = classColor(name)
+				return cc and ("|cff%02x%02x%02x%s|r"):format(cc.r * 255, cc.g * 255, cc.b * 255, name) or name
+			end
+			DBM:AddMsg(("Cooldown plan tanks: %s, then %s."):format(colored(tanks[1]), colored(tanks[2])))
+		end
+	end)
+end
+
+-- origin: the time cooldowns are counted ready from (plan time 0); quiet: nothing said when there aren't two tanks
+-- (the boss module's CheckTanks says it nearer the boss)
+local function autoPlan(id, origin, quiet)
 	local pool, tanks = roster(origin)
 	tanks = {tanks[1], tanks[2]}
 	if #tanks < 2 then
 		plog("no plan for %s: %d tank(s)", id, #tanks)
-		-- only clients with the cooldown plan answer the ask, so a tank on an older DBM reports nothing
-		DBM:AddMsg(("No cooldown plan for %s: it needs two tanks' cooldowns, and %s reported. Set Main Tank and Main Assist on them in the raid frame; they need this DBM to report."):format(id, #tanks == 1 and ("only " .. tanks[1]) or "no tank"))
+		if not quiet then DBM:AddMsg("No plan made. " .. CP.TankWarning(id, tanks)) end
 		return
 	end
 	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})))
@@ -1735,7 +1787,7 @@ function CP.Prepare(mod)
 	if AOE_ONLY or not saved or not ownsAuto(id) then return end
 	send("Q")
 	DBM:Schedule(AUTO_WAIT, function()
-		if ownsAuto(id) and autoPlan(id, GetTime()) then DBM:AddMsg(("Cooldown plan for %s made; it's made again and sent on each pull."):format(id)) end
+		if ownsAuto(id) and autoPlan(id, GetTime(), true) then DBM:AddMsg(("Cooldown plan for %s made; it's made again and sent on each pull."):format(id)) end
 	end)
 end
 
@@ -2677,7 +2729,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 			local name = GetSpellInfo(cast)
 			if name then
 				defaultByName[name], tracked[name], colorByName[name], shortByName[name] = {c.dur, c.cd, c.power}, true, STRIP_COLORS[cast], STRIP_SHORT[cast]
-				roleByName[name], raidByName[name], trinketByName[name], smashOnlyByName[name], notSelfByName[name] = c.role, c.raid, c.trinket, c.smashOnly, c.notSelf
+				roleByName[name], raidByName[name], trinketByName[name], smashOnlyByName[name], notSelfByName[name], healsByName[name] = c.role, c.raid, c.trinket, c.smashOnly, c.notSelf, c.heals
 			end
 		end
 		for _, text in pairs(saved.plans) do track(text) end
