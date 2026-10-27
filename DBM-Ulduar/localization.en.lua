@@ -135,12 +135,14 @@ L:SetWarningLocalization({
 
 L:SetTimerLocalization({
 	NextCollapsingStar		= "Next Collapsing Star",
-	TimerCombatStart		= "Combat starts"
+	TimerCombatStart		= "Combat starts",
+	TimerBeginCDs			= "Tank CD in"
 })
 
 L:SetOptionLocalization({
 	NextCollapsingStar		= "Show timer for next Collapsing Star",
 	TimerCombatStart		= "Show timer for start of combat",
+	TimerBeginCDs			= "Show timer to begin tank cooldowns, just before the first Quantum Strike",
 	HealthFrame				= "Show Collapsing Star health bars",
 	SetIconOnStars			= "Set icons on Stars: requires a raid assist mouseover the stars or observe others doing it",
 	warnStarLow				= "Show special warning when Collapsing Star is low (at ~25%)",

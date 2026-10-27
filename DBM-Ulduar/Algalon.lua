@@ -60,6 +60,9 @@ local timerCDCosmicSmash		= mod:NewCDTimer(25.5, 64596, nil, nil, nil, 3)
 local timerCastCosmicSmash		= mod:NewCastTimer(4.5, 64596)
 local timerPhasePunch			= mod:NewTargetTimer(45, 64412, nil, false, 2, 5, nil, DBM_COMMON_L.TANK_ICON)
 local timerNextPhasePunch		= mod:NewNextCountTimer(15.5, 64412, nil, "Tank", 2, 5, nil, DBM_COMMON_L.TANK_ICON, true)
+-- ends a little before the pull's first hit (Quantum Strike) so tank cooldowns are surely up when it lands
+local timerFirstQuantumStrike	= mod:NewTimer(3, "TimerBeginCDs", 64395, "Tank", nil, 5, DBM_COMMON_L.TANK_ICON)
+local BEGIN_CDS_LEEWAY = 0.5
 local enrageTimer				= mod:NewBerserkTimer(360, nil, nil, nil, false) -- berserk default OFF
 local timerCombatStart 			= mod:NewTimer(26, "TimerCombatStart", "Interface\\Icons\\ability_warrior_offensivestance")
 
@@ -620,9 +623,11 @@ function mod:OnCombatStart(delay)
 	local minutes = tonumber(text and text:match("%d+")) or 0
 	if minutes == 0 or minutes >= 60 then
 		timerCombatStart:Start(-delay)			-- 26s Roleplay
+		timerFirstQuantumStrike:Start(26 + 3.5 - BEGIN_CDS_LEEWAY - delay)
 		self:ScheduleMethod(26 - delay, "startTimers")
 	else
 		timerCombatStart:Start(8.5 - delay)		-- 8.5s Roleplay (AC introDelay on later pulls)
+		timerFirstQuantumStrike:Start(8.5 + 3.5 - BEGIN_CDS_LEEWAY - delay)
 		self:ScheduleMethod(8.5 - delay, "startTimers")
 	end
 end
@@ -665,6 +670,7 @@ function mod:SPELL_CAST_SUCCESS(args)
 		-- from it, whatever the pull guessed
 		self.vb.introFixed = true
 		timerCombatStart:Stop()
+		timerFirstQuantumStrike:Stop()
 		self:UnscheduleMethod("startTimers")
 		self:startTimers(3.5)
 		if DBM.CooldownPlan.SetFightTime then DBM.CooldownPlan.SetFightTime(3.5) end

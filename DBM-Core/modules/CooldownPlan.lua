@@ -219,24 +219,24 @@ function CP.SwapTimes(from, stop, stacks)
 	return out
 end
 
--- when each Cosmic Smash lands
+-- when each Cosmic Smash lands; the last cast, at 5:58.5, would land after Ascend ends the fight
 function CP.SmashTimes(from, stop)
 	local out = {}
 	for _, c in ipairs(smashCasts) do
 		local t = c + SMASH_LANDS
-		if t >= from and t < stop then out[#out + 1] = t end
+		if t >= from and t < stop and t < FIGHT then out[#out + 1] = t end
 	end
 	return out
 end
 
 -- Star kill zones {from, to, index, kills} overlapping from..stop, one per smash gap: 7s to 18.5s after a Cosmic
 -- Smash lands (healers have topped the raid from it; the explosion stays 7s clear of the next smash). In a gap a Big
--- Bang lands in, the zone starts 5s after the landing if it still fits, else ends 1s before the landing: inside the
+-- Bang lands in, the zone starts 5s after the landing if it still fits, else ends 3s before the landing: inside the
 -- cast is fine (Big Bang only kills the unphased, whatever their health) and the dying star leaves a Black Hole for
--- it. A zone holding a summon opens at it, since a kill before would be replaced at once. index counts gaps with
--- room, from the pull. A gap whose star would only be killed a few seconds before it runs out on its own gets no zone
+-- it, and ending well before the landing pushes the kill early in the cast. A zone holding a summon opens at it,
+-- since a kill before would be replaced at once. index counts gaps with room, from the pull. A gap whose star would only be killed a few seconds before it runs out on its own gets no zone
 -- but a marker at that moment, {from = to = the run-out, expires = true}: let it go.
-local SAFE_FROM, SAFE_TO, BANG_AFTER, BANG_BEFORE = 7, 18.5, 5, 1
+local SAFE_FROM, SAFE_TO, BANG_AFTER, BANG_BEFORE = 7, 18.5, 5, 3
 -- a zone that ends before a Big Bang lands slides this much sooner, though it then starts 5s after the smash: the star
 -- dies earlier in the cast, with more time to use its Black Hole
 local BANG_SLIDE = 2
