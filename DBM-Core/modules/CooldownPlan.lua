@@ -756,14 +756,41 @@ local function build(opts, rng, smashRng)
 			end
 		end
 	end
-	-- 4: trinkets (weak, ~10%) aren't cover on their own: first into their owner's holes, longest first, since
-	-- something beats nothing, then up with their owner's weakest cooldowns
-	table.sort(holes, function(a, b) return a[3] - a[2] > b[3] - b[2] end)
+	-- 4: trinkets (weak, ~10%) aren't cover on their own: first into their owner's holes, since something beats nothing,
+	-- then up with their owner's weakest cooldowns. A trinket's uses are chosen together, for the most of its owner's bare
+	-- time covered: each start a hole's or ending as a hole ends, and of the sets a cooldown apart the one covering most
+	-- (a DP over the starts in order). Over 698 sample rosters it never covered less than each hole longest first, and
+	-- covered more on a third of them
 	for i, c in ipairs(pool) do
 		if c.trinket then
+			local starts, seen = {}, {}
 			for _, h in ipairs(holes) do
-				if h[1] == c.player and free(i, h[2]) and worthIt(c, h[2]) then use(i, h[2], c.player) end
+				if h[1] == c.player then
+					for _, s in ipairs({h[2], h[3] - c.dur}) do
+						if not seen[s] and s >= from and s < stop and free(i, s) and worthIt(c, s) then
+							seen[s] = true
+							local cover = 0
+							for _, g in ipairs(holes) do
+								if g[1] == c.player then cover = cover + math.max(0, math.min(g[3], s + c.dur) - math.max(g[2], s)) end
+							end
+							if cover > 0 then starts[#starts + 1] = {s, cover} end
+						end
+					end
+				end
 			end
+			table.sort(starts, function(x, y) return x[1] < y[1] end)
+			local best, take = {[0] = 0}, {}
+			for k = 1, #starts do
+				local p = 0 -- the last start a cooldown or more before this one
+				for j = k - 1, 1, -1 do if starts[k][1] - starts[j][1] >= c.cd then p = j break end end
+				local with = starts[k][2] + best[p]
+				if with > best[k - 1] then best[k], take[k] = with, p else best[k], take[k] = best[k - 1], nil end
+			end
+			local k, picked = #starts, {}
+			while k > 0 do
+				if take[k] then picked[#picked + 1] = starts[k][1] k = take[k] else k = k - 1 end
+			end
+			for n = #picked, 1, -1 do use(i, picked[n], c.player) end
 		end
 	end
 	for i, c in ipairs(pool) do
@@ -788,18 +815,25 @@ local function build(opts, rng, smashRng)
 	local trinketOnly = 0
 	table.sort(holes, function(a, b) return a[2] < b[2] end)
 	for _, h in ipairs(holes) do
-		local c = h[2]
-		for _, r in ipairs(rows) do -- what a trinket covers of the hole
-			if r.target == h[1] and trinketByPool[r.player .. "\0" .. r.spell] and r.time <= c and r.time + r.dur > c then
-				local to = math.min(h[3], r.time + r.dur)
-				trinketOnly = trinketOnly + to - c
-				c = to
+		-- every trinket over the hole, wherever it starts in it: the parts they cover are trinket-only, the rest bare
+		local spans = {}
+		for _, r in ipairs(rows) do
+			if r.target == h[1] and trinketByPool[r.player .. "\0" .. r.spell] then
+				local a, b = math.max(h[2], r.time), math.min(h[3], r.time + r.dur)
+				if b > a then spans[#spans + 1] = {a, b} end
 			end
 		end
-		if c < h[3] then
-			problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(h[3]))
-			uncovered = uncovered + h[3] - c
+		table.sort(spans, function(x, y) return x[1] < y[1] end)
+		local c = h[2]
+		local function bare(to)
+			problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(to))
+			uncovered = uncovered + to - c
 		end
+		for _, sp in ipairs(spans) do
+			if sp[1] > c then bare(sp[1]) c = sp[1] end
+			if sp[2] > c then trinketOnly = trinketOnly + sp[2] - c c = sp[2] end
+		end
+		if c < h[3] then bare(h[3]) end
 	end
 	-- and the smashes landing with no raid-wide cooldown up: last, so it only decides between plans as good for the tanks
 	local smashBare = 0
@@ -811,15 +845,21 @@ local function build(opts, rng, smashRng)
 		if not has then smashBare = smashBare + 1 end
 	end
 	-- worst first: a swap without its big cooldown, tank time with nothing up, tank time with only a trinket,
-	-- a smash with no raid-wide cooldown up
+	-- a smash with no raid-wide cooldown up (also counted into the tank time at CP.SMASH_COST when compared: better)
 	return rows, problems, {bigMissed, round(uncovered), round(trinketOnly), smashBare}
 end
 
 local TRIES = 40	-- variations tried on top of the plain build, keeping the best
 local SMASH_TRIES = 20	-- and variations that also try raid-wide cooldowns on smashes (step 2), on their own random numbers
+-- a smash landing with no raid-wide cooldown up costs this many seconds of bare tank time when plans are compared:
+-- a plan may give the tanks up to 3s more bare time to cover one more smash (the raid's call, over 698 sample rosters:
+-- with the trinkets placed as above, still less bare tank time than before and a smash in ten more covered)
+CP.SMASH_COST = 3
 local function better(a, b)
-	for i = 1, #a do
-		if a[i] ~= b[i] then return a[i] < b[i] end
+	local w = CP.SMASH_COST
+	local ka, kb = {a[1], a[2] + w * a[4], a[3], a[4]}, {b[1], b[2] + w * b[4], b[3], b[4]}
+	for i = 1, #ka do
+		if ka[i] ~= kb[i] then return ka[i] < kb[i] end
 	end
 	return false
 end
@@ -845,7 +885,8 @@ local function generateOnce(opts, tries)
 end
 
 -- opts.small (a 10-man): the plan is made both with and without a tank's short cooldown at their swaps (swapRoles:
--- Barkskin rather than Survival Instincts), and the one with less bare time wins, then less trinket-only time. A swap
+-- Barkskin rather than Survival Instincts), and the one with less bare time wins (a bare smash counted in at
+-- CP.SMASH_COST), then less trinket-only time. A swap
 -- on Barkskin and one on an external are what's being weighed, so the swaps-without-a-big-cooldown count doesn't
 -- decide. A 25-man swaps on the big one: if it's short of cooldowns, that's the raid's to fix.
 function CP.Generate(opts, tries)
@@ -853,7 +894,8 @@ function CP.Generate(opts, tries)
 	local with = setmetatable({swapShort = true}, {__index = opts})
 	local a = {generateOnce(with, tries)}
 	local b = {generateOnce(opts, tries)}
-	if a[3][2] ~= b[3][2] then return unpack(a[3][2] < b[3][2] and a or b) end
+	local ca, cb = a[3][2] + CP.SMASH_COST * a[3][4], b[3][2] + CP.SMASH_COST * b[3][4]
+	if ca ~= cb then return unpack(ca < cb and a or b) end
 	return unpack(a[3][3] <= b[3][3] and a or b)
 end
 
