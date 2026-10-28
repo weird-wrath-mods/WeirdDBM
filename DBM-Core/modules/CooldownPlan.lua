@@ -1079,10 +1079,23 @@ function CP.Card(rows, period, player, t)
 			end
 		end
 	end
+	-- two of mine pressed together (a trinket "with" a cooldown): one step too, the trinket under the cooldown as
+	-- "then <trinket>" until the cooldown is cast (or its press is past), then on the big line
+	local withOf, along = {}, {}
+	for _, r in ipairs(rows) do
+		if r.player == player and r.note and r.note:sub(1, 5) == "with " then
+			for _, c in ipairs(rows) do
+				if c.player == player and c ~= r and math.abs(c.time - r.time) < 0.01 and r.note == "with " .. c.spell then
+					withOf[r], along[c] = c, r
+				end
+			end
+		end
+	end
 	local function shown(r)
 		if r.player ~= player or r.done then return false end
 		if paired[r] and t >= paired[r].time then return false end
 		if pairOf[r] and not pairOf[r].done and t < r.time then return false end
+		if withOf[r] and not withOf[r].done and t < r.time + MATCH then return false end
 		return true
 	end
 	for _, r in ipairs(rows) do
@@ -1108,6 +1121,7 @@ function CP.Card(rows, period, player, t)
 	end
 	local top = card.go or card.next
 	card.thenTaunt = top and paired[top] and not paired[top].done or nil
+	card.thenWith = top and along[top] and not along[top].done and along[top] or nil
 	return card
 end
 
@@ -1647,6 +1661,8 @@ local function heardReady(name, spell, wait)
 		if u.player == name and u.spell == spell then
 			fight.back = fight.back or {}
 			fight.back[name .. "\0" .. spell] = {at = t, readyAt = t + wait}
+			local _, cd = CP.Info(name, spell)
+			plog("%s's %s back at %.1f (used at %.1f, its full cooldown %s)", name, spell, t + wait, u.time, cd and ("%.1f"):format(u.time + cd) or "?")
 			replanSoon()
 			return
 		end
@@ -1863,17 +1879,29 @@ local function startPlan()
 end
 
 -- The raid leader's plan for a boss whose module asks for one (CP.Prepare) is made for them: when the module loads,
--- and again on every pull from what everyone reports then, sent before the boss starts fighting. A plan they saved
--- or sent from the editor, or got from an assistant, is left as it is.
+-- and again on every pull from what everyone reports then, sent before the boss starts fighting. Whatever plan they
+-- hold (one sent from the editor, or the last leader's) is made again over: the raid's plan is always made, not written.
 local AUTO_WAIT = 2	-- for everyone's cooldowns (C) to come back after the ask (Q)
 CP.lastSent = {}	-- [plan id] = the plan text last sent: the room's checks send only a changed one, the pull always
+CP.lastInputs = {}	-- [plan id] = what the room's checks last made it from (CP.PlanInputs): the same again isn't made again
+-- what a plan is made from, as text to compare: each cooldown and whether it's ready now (not its seconds left, which
+-- tick down on every ask), the two tanks, the weaker of them and the raid's size
+function CP.PlanInputs(pool, tanks, weaker, small)
+	local out = {}
+	for _, c in ipairs(pool) do
+		out[#out + 1] = ("%s|%s|%s|%s|%s|%s"):format(c.player, c.spell, tostring(c.dur), tostring(c.cd), tostring(c.power),
+			(c.readyAt or 0) > 0 and "wait" or "ready")
+	end
+	table.sort(out)
+	return ("%s|%s|%s|%s\n"):format(tostring(tanks[1]), tostring(tanks[2]), tostring(weaker), tostring(small)) .. table.concat(out, "\n")
+end
 -- true: no plan is made or run; a boss that asks for one (CP.Prepare) gets the timeline's AoE lane on its pull, the
 -- tank lane reading WIP. Known open issues with planning on: tanks not found by Main Assist, offline tanks report
 -- nothing.
 local AOE_ONLY = false
 local autoFor = {}
 local function ownsAuto(id)
-	return autoFor[id] and DBM:GetRaidRank() == 2 and (saved.auto[id] or not saved.plans[id])
+	return autoFor[id] and DBM:GetRaidRank() == 2
 end
 -- what to say when the tanks found (roster) aren't two, else nil; only clients with the cooldown plan answer the ask,
 -- so a tank on an older DBM reports nothing
@@ -1912,7 +1940,7 @@ function CP.CheckTanks(mod, atOnce)
 	mod.tankCheckAt = GetTime()
 	send("Q")
 	DBM:Schedule(AUTO_WAIT, function()
-		local _, tanks = roster(GetTime())
+		local pool, tanks = roster(GetTime())
 		local id = tostring(mod.id):lower()
 		local text = CP.TankWarning(id, tanks)
 		if text then
@@ -1920,8 +1948,19 @@ function CP.CheckTanks(mod, atOnce)
 			DBM:AddMsg(text)
 			return
 		end
-		-- before the pull everyone sees their part (CP.Prefight): the plan as it stands now, sent when it changed
-		local made = ownsAuto(id) and not mod:IsInCombat() and autoPlan(id, GetTime(), true)
+		-- before the pull everyone sees their part (CP.Prefight): the plan as it stands now, sent when it changed. Made
+		-- again only when what it's made from has: nobody's cooldowns, the tanks and the raid as at the last check
+		local made
+		if ownsAuto(id) and not mod:IsInCombat() then
+			local inputs = CP.PlanInputs(pool, {tanks[1], tanks[2]}, weakerTank({tanks[1], tanks[2]}), smallRaid())
+			if inputs == CP.lastInputs[id] and saved.plans[id] then
+				made = saved.plans[id]
+			else
+				made = autoPlan(id, GetTime(), true)
+				CP.lastInputs[id] = made and inputs or nil
+				plog("check %s: %s", id, made and "made again, the raid's cooldowns changed" or "no plan")
+			end
+		end
 		if made and made ~= CP.lastSent[id] then
 			CP.lastSent[id] = made
 			for _, m in ipairs(planMessages(id, made) or {}) do send(m) end
@@ -1980,6 +2019,7 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	if not ownsAuto(this.id) then plog("pull %s: not mine to plan, no ask", this.id) return end
 	send("Q")
 	plog("pull %s: asked (Q)", this.id)
+	CP.lastInputs[this.id] = nil -- after the pull (cooldowns spent, a wipe), the room's next check makes one afresh
 	DBM:Schedule(AUTO_WAIT, function()
 		if pulled ~= this or not ownsAuto(this.id) then plog("pull %s: gone before the plan", this.id) return end
 		local text = autoPlan(this.id, pullTime)
@@ -2210,7 +2250,8 @@ function showCard(rows, period, t, prepull, withRole)
 		if c.nextIn <= 10 then card.num:SetTextColor(1, 0.82, 0) else card.num:SetTextColor(0.75, 0.75, 0.75) end
 	end
 	local bubbleName = bubbleFirst(r, rows)
-	local said = bubbleName and "then " .. r.spell or bubbleName == false and "no bubble: skip" or c.thenTaunt and "then Taunt" or sub(r)
+	local said = bubbleName and "then " .. r.spell or bubbleName == false and "no bubble: skip" or c.thenTaunt and "then Taunt"
+		or c.thenWith and "then " .. c.thenWith.spell or sub(r)
 	card.spell:SetText(bubbleName or r.spell)
 	card.sub:SetText(said)
 	-- what the card says, each time it changes, with the row behind it: to check a target against who has the boss then
