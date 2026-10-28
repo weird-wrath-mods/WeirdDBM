@@ -73,7 +73,21 @@ private.cooldownData = {
 		{field = "cd", flat = -60, talent = 20174, rank = 1}, -- Guardian's Favor
 		{field = "cd", flat = -120, talent = 20174, rank = 2}, -- Guardian's Favor
 	}},
-	[64763] = {buff = 64763, dur = 20, cd = 120, power = 10, role = "self", class = "ANY", trinket = true, mods = { -- Heart of Iron
+	[64763] = {buff = 64763, dur = 20, cd = 120, power = 6, role = "self", class = "ANY", trinket = true, mods = { -- Heart of Iron
+	}},
+	[60286] = {buff = 60286, dur = 20, cd = 120, power = 6, role = "self", class = "ANY", trinket = true, mods = { -- Defender's Code
+	}},
+	[68443] = {buff = 68443, dur = 20, cd = 120, power = 5, role = "self", class = "ANY", trinket = true, mods = { -- Drunken Evasiveness
+	}},
+	[60054] = {buff = 60054, dur = 20, cd = 120, power = 5, role = "self", class = "ANY", trinket = true, mods = { -- Valor Medal of the First War
+	}},
+	[59757] = {buff = 59757, dur = 10, cd = 60, power = 4, role = "self", class = "ANY", trinket = true, mods = { -- Figurine - Monarch Crab
+	}},
+	[65012] = {buff = 65012, dur = 20, cd = 120, power = 4, role = "self", class = "ANY", trinket = true, mods = { -- Royal Seal of King Llane
+	}},
+	[60258] = {buff = 60258, dur = 20, cd = 120, power = 4, role = "self", class = "ANY", trinket = true, mods = { -- Rune of Repulsion
+	}},
+	[65011] = {buff = 65011, dur = 20, cd = 120, power = 9, role = "self", class = "ANY", trinket = true, mods = { -- Furnace Stone
 	}},
 }
-private.cooldownTrinkets = {[64763] = 45158}
+private.cooldownTrinkets = {[64763] = 45158, [60286] = 40257, [68443] = 49080, [60054] = 40683, [59757] = 44063, [65012] = 46021, [60258] = 40372, [65011] = 45313}

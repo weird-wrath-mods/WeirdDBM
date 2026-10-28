@@ -524,6 +524,16 @@ local function build(opts, rng, smashRng)
 			if math.abs(t - u) < c.cd then return false end
 		end
 		if forbearing(c.spell) and locked(c.player, t, i) then return false end -- a paladin tank's Divine Protection
+		-- two trinkets pressed together is a lot at once for a tank; up together, or back to back, is fine
+		if c.trinket then
+			for j, o in ipairs(pool) do
+				if j ~= i and o.trinket and o.player == c.player then
+					for _, u in ipairs(uses[j]) do
+						if math.abs(t - u) < gap then return false end
+					end
+				end
+			end
+		end
 		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count)
 		if gap > 0 and not c.trinket then
 			for j, o in ipairs(pool) do
@@ -763,18 +773,38 @@ local function build(opts, rng, smashRng)
 	-- covered more on a third of them
 	for i, c in ipairs(pool) do
 		if c.trinket then
-			local starts, seen = {}, {}
+			-- the owner's holes less what their other trinkets already cover, so a second one goes after bare time
+			-- (starting as the first one ends, say) rather than onto the first
+			local left = {}
 			for _, h in ipairs(holes) do
 				if h[1] == c.player then
-					for _, s in ipairs({h[2], h[3] - c.dur}) do
-						if not seen[s] and s >= from and s < stop and free(i, s) and worthIt(c, s) then
-							seen[s] = true
-							local cover = 0
-							for _, g in ipairs(holes) do
-								if g[1] == c.player then cover = cover + math.max(0, math.min(g[3], s + c.dur) - math.max(g[2], s)) end
+					local parts = {{h[2], h[3]}}
+					for j, o in ipairs(pool) do
+						if j ~= i and o.trinket and o.player == c.player then
+							for _, u in ipairs(uses[j]) do
+								local cut = {}
+								for _, p in ipairs(parts) do
+									if u >= p[2] or u + o.dur <= p[1] then cut[#cut + 1] = p
+									else
+										if u > p[1] then cut[#cut + 1] = {p[1], u} end
+										if u + o.dur < p[2] then cut[#cut + 1] = {u + o.dur, p[2]} end
+									end
+								end
+								parts = cut
 							end
-							if cover > 0 then starts[#starts + 1] = {s, cover} end
 						end
+					end
+					for _, p in ipairs(parts) do left[#left + 1] = p end
+				end
+			end
+			local starts, seen = {}, {}
+			for _, h in ipairs(left) do
+				for _, s in ipairs({h[1], h[2] - c.dur}) do
+					if not seen[s] and s >= from and s < stop and free(i, s) and worthIt(c, s) then
+						seen[s] = true
+						local cover = 0
+						for _, g in ipairs(left) do cover = cover + math.max(0, math.min(g[2], s + c.dur) - math.max(g[1], s)) end
+						if cover > 0 then starts[#starts + 1] = {s, cover} end
 					end
 				end
 			end
@@ -1217,7 +1247,7 @@ local tracked = {}
 -- what the plan did and why, the last LOG_MAX lines, in the saved variables (DBM_CooldownPlans.log) to read after a
 -- reload or logout
 local function plog(fmt, ...)
-	local LOG_MAX = 500
+	local LOG_MAX = 2000 -- a fight's re-plans outlast the cooldown reports' lines (each ask is ~20) until a reload
 	if not saved then return end
 	local log = saved.log or {}
 	saved.log = log
@@ -1289,7 +1319,9 @@ local function myItemLevel()
 	return math.floor(sum / 17)
 end
 
+-- M first: what follows is all of mine, so whatever I sent before and don't send again (a trinket taken off) is gone
 local function sendMine()
+	send("M")
 	for spell, r in pairs(saved.mine[playerName] or {}) do sendOne(spell, r) end
 	send(iTank() and ("T\t1\t%d"):format(myItemLevel()) or "T\t0")
 end
@@ -1563,7 +1595,10 @@ local function liveUse(use, offSelf)
 			matters = true -- (a bubble's own hand is due within MATCH of it)
 		end
 	end
-	if matters or (tanks and (use.target == tanks[1] or use.target == tanks[2])) then replanSoon() end
+	if matters or (tanks and (use.target == tanks[1] or use.target == tanks[2])) then
+		plog("off plan: %s %s at %.1f on %s", use.player, use.spell, use.time, tostring(use.target))
+		replanSoon()
+	end
 end
 
 -- a cast seen live, from the combat log or a raider's own word (P), once: the other report of it is dropped
@@ -1581,6 +1616,20 @@ local function castSeen(player, spell, destName, t, offSelf)
 end
 
 local function liveDeath(name)
+	-- a tank lost after the first swap is a wipe: the sent plan stands. Before it, the other tank takes the boss and
+	-- the rest is planned on them, the one time in the fight that can be recovered from
+	local tanks, t = activeTanks(), GetTime() - pullTime
+	if tanks and (name == tanks[1] or name == tanks[2]) then
+		for _, r in ipairs(active.rows) do
+			if r.note == "Tank swap" then
+				if t >= r.time + SWAP_LEAD then
+					plog("%s died at %.1f, after the first swap: no re-plan", name, t)
+					return
+				end
+				break
+			end
+		end
+	end
 	for _, r in ipairs(active.rows) do
 		if (r.player == name or r.target == name) and r.time > GetTime() - pullTime then
 			fight.dead[name] = true
@@ -1735,17 +1784,40 @@ local function replan()
 	local t = GetTime() - pullTime
 	local tanks = activeTanks()
 	if not tanks then return end
-	-- swaps keep the plan's schedule, whatever Phase Punch says between them: a late taunt still lands, or the tank's
-	-- 5th stack drops their threat and forces it. Who has the boss now is the schedule's, too
-	local tank = #CP.SwapTimes(0, t) % 2 + 1
+	-- the tank order is the sent plan's for the whole fight, never re-planned: each swap's time and incoming tank, kept
+	-- from the rows as they are before the first re-plan (a tank doesn't change hands mid-fight but by a wipe or the
+	-- holder's own Phase Punch stacks)
+	if not active.swaps then
+		active.swaps = {}
+		local list = {}
+		for _, r in ipairs(active.rows) do
+			if r.note == "Tank swap" then
+				active.swaps[#active.swaps + 1] = {at = r.time + SWAP_LEAD, to = r.target}
+				list[#list + 1] = ("%g>%s"):format(r.time + SWAP_LEAD, r.target or "?")
+			end
+		end
+		plog("tanks %s, %s; swaps fixed at %s", tanks[1], tanks[2], table.concat(list, " "))
+	end
+	-- swaps are the sent plan's, whatever Phase Punch says between them: a late taunt still lands, or the tank's 5th
+	-- stack drops their threat and forces it. Who has the boss now is the last of them past, else whoever opened
+	local first = active.swaps[1]
+	local holder, swaps = first and first.to == tanks[1] and tanks[2] or tanks[1], {}
+	for _, w in ipairs(active.swaps) do
+		if w.at <= t then holder = w.to else swaps[#swaps + 1] = w.at end
+	end
+	local tank = holder == tanks[2] and 2 or 1
 	local rows = CP.Replan({
 		rows = active.rows, uses = fight.uses, pool = active.pool or (roster(pullTime)), tanks = tanks, tank = tank, weaker = active.weaker or weakerTank(tanks),
-		now = t, dead = fight.dead, missed = fight.missed, back = fight.back, small = smallRaid(),
+		now = t, dead = fight.dead, missed = fight.missed, back = fight.back, small = smallRaid(), swaps = swaps,
 	})
-	local future = {}
+	local future, swapRows, ext = {}, {}, {}
 	for _, r in ipairs(rows) do
 		if r.time >= t then future[#future + 1] = r end
+		if r.time >= t and r.note == "Tank swap" then swapRows[#swapRows + 1] = ("%g>%s"):format(r.time, r.target or "?") end
+		-- the next minute's cooldowns from others: who each is on, to check against who has the boss then
+		if r.time >= t and r.time < t + 60 and r.player ~= r.target then ext[#ext + 1] = ("%g %s %s>%s"):format(r.time, r.player, r.spell, r.target or "raid") end
 	end
+	plog("re-plan %.1f: %s has the boss, swaps %s; next minute %s", t, holder, table.concat(swapRows, " "), table.concat(ext, ", "))
 	applyRows(future, t)
 	if active.test then -- the stand-in raid isn't the real one: nothing to send
 		sayTest(("re-planned, %d uses from here"):format(#future))
@@ -2138,8 +2210,15 @@ function showCard(rows, period, t, prepull, withRole)
 		if c.nextIn <= 10 then card.num:SetTextColor(1, 0.82, 0) else card.num:SetTextColor(0.75, 0.75, 0.75) end
 	end
 	local bubbleName = bubbleFirst(r, rows)
+	local said = bubbleName and "then " .. r.spell or bubbleName == false and "no bubble: skip" or c.thenTaunt and "then Taunt" or sub(r)
 	card.spell:SetText(bubbleName or r.spell)
-	card.sub:SetText(bubbleName and "then " .. r.spell or bubbleName == false and "no bubble: skip" or c.thenTaunt and "then Taunt" or sub(r))
+	card.sub:SetText(said)
+	-- what the card says, each time it changes, with the row behind it: to check a target against who has the boss then
+	local key = ("%s\0%s\0%g"):format(bubbleName or r.spell, said, r.time)
+	if card.said ~= key then
+		card.said = key
+		plog("card %.1f: %s / %s (row %g %s %s on %s)", t, bubbleName or r.spell, said:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""), r.time, r.player, r.spell, tostring(r.target))
+	end
 	-- the press after that: the next one when the big line is NOW, else the one after the next
 	local after, afterIn = c.go and c.next or c.later, c.go and c.nextIn or c.laterIn
 	card.nextAt = not prepull and not c.go and t + c.nextIn or nil
@@ -2220,7 +2299,8 @@ local STRIP_SHORT = {
 	[48792] = "Icebound", [498] = "Div Prot", [871] = "Shield Wall", [61336] = "Surv Inst", [55233] = "Vamp Blood",
 	[51271] = "Unbr Armor", [12975] = "Last Stand", [22812] = "Barkskin", [6940] = "Hand of Sac", [1038] = "Hand of Salv",
 	[64205] = "DSac", [48788] = "Lay on Hands", [33206] = "Pain Sup", [47788] = "Guard Spirit", [31821] = "AuraM",
-	[64763] = "Heart of Iron",
+	[64763] = "Heart of Iron", [60286] = "Def Code", [68443] = "Brawler's", [60054] = "Valor Medal", [59757] = "Monarch Crab",
+	[65012] = "King Llane", [60258] = "Repulsion", [65011] = "Furnace",
 }
 local shortByName = {}
 -- one colour per cooldown, by cast spell; no yellows (the swap marks) or gold (the outline on my own uses)
@@ -2241,6 +2321,9 @@ local STRIP_COLORS = {
 	[47788] = {0.23, 0.56, 0.79}, -- Guardian Spirit
 	[31821] = {0.49, 0.25, 0.71}, -- Aura Mastery
 	[64763] = {0.42, 0.42, 0.42}, -- Heart of Iron
+	-- the other trinkets share Heart of Iron's grey: a tank wears two at most, and grey reads as "trinket"
+	[60286] = {0.42, 0.42, 0.42}, [68443] = {0.42, 0.42, 0.42}, [60054] = {0.42, 0.42, 0.42}, [59757] = {0.42, 0.42, 0.42},
+	[65012] = {0.42, 0.42, 0.42}, [60258] = {0.42, 0.42, 0.42}, [65011] = {0.42, 0.42, 0.42},
 }
 local colorByName = {}
 local function stripPart(list, kind)
@@ -2981,7 +3064,9 @@ events:SetScript("OnEvent", function(_, event, ...)
 		if prefix ~= PREFIX or sender == playerName or not saved then return end
 		local kind = msg:sub(1, 1)
 		if kind ~= "L" and kind ~= "U" then plog("got %s from %s", msg:gsub("\t", " "), sender) end
-		if kind == "C" then
+		if kind == "M" then
+			reported[sender] = {} -- their whole list follows; a C on its own (back sooner, a first use measured) adds to it
+		elseif kind == "C" then
 			local _, spell, dur, cd, wait, power = strsplit("\t", msg)
 			reported[sender] = reported[sender] or {}
 			reported[sender][spell] = {dur = tonumber(dur), cd = tonumber(cd), power = tonumber(power), readyAt = GetTime() + (tonumber(wait) or 0)}
