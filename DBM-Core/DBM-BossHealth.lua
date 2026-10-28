@@ -16,6 +16,9 @@ local getBarId
 local updateBar
 local anchor
 local header
+-- a mod's own place for the frame this session (SetPlace), so moving it there leaves every other boss's where it is:
+-- {point, x, y, locked = function, moved = function(point, x, y)}; nil: everyone's (DBM.Options.HPFrame*)
+local place
 local dropdownFrame
 local AceTimer = LibStub("AceTimer-3.0")
 
@@ -65,20 +68,34 @@ menu = {
 -----------------------
 --  Script Handlers  --
 -----------------------
+local function locked()
+	if place then return place.locked() end
+	return DBM.Options.HealthFrameLocked
+end
+
 local function onMouseDown(self, button)
-	if button == "LeftButton" and not DBM.Options.HealthFrameLocked then
+	if button == "LeftButton" and not locked() then
 		anchor.moving = true
 		anchor:StartMoving()
 	end
 end
 
 local function onMouseUp(self, button)
+	local dragged = anchor.moving
 	anchor.moving = nil
 	anchor:StopMovingOrSizing()
 	local point, _, _, x, y = anchor:GetPoint(1)
-	DBM.Options.HPFramePoint = point
-	DBM.Options.HPFrameX = x
-	DBM.Options.HPFrameY = y
+	if place then
+		-- only a drag: hiding passes here too, and the mod's spot isn't saved until it's moved
+		if dragged then
+			place.point, place.x, place.y = point, x, y
+			place.moved(point, x, y)
+		end
+	else
+		DBM.Options.HPFramePoint = point
+		DBM.Options.HPFrameX = x
+		DBM.Options.HPFrameY = y
+	end
 	if button == "RightButton" then
 		EasyMenu(menu, dropdownFrame, "cursor", nil, nil, "MENU")
 	end
@@ -142,6 +159,14 @@ end
 -----------------------
 -- Create the Frame  --
 -----------------------
+-- where the frame sits: the mod's place this session, else everyone's
+local function setHome()
+	local point, x, y = DBM.Options.HPFramePoint, DBM.Options.HPFrameX, DBM.Options.HPFrameY
+	if place then point, x, y = place.point, place.x, place.y end
+	anchor:ClearAllPoints()
+	anchor:SetPoint(point, UIParent, point, x, y)
+end
+
 local function createFrame(self)
 	anchor = CreateFrame("Frame", nil, UIParent)
 	anchor:SetWidth(60)
@@ -346,8 +371,10 @@ end
 -----------------------
 function bossHealth:Show(name)
 	if not anchor then createFrame(bossHealth) end
-	-- a mod's SetBarSpacing/SetHeaderOffset last until the frame is opened again
+	-- a mod's SetBarSpacing/SetHeaderOffset/SetPlace last until the frame is opened again
 	barOverlap = 0
+	place = nil
+	setHome()
 	header:SetPoint("BOTTOM", anchor, "BOTTOM", 0, 0)
 	header:SetText(name)
 	anchor:Show()
@@ -373,6 +400,16 @@ end
 -- Moves the header text up (positive) or down from its default spot. Call after Show.
 function bossHealth:SetHeaderOffset(y)
 	if header then header:SetPoint("BOTTOM", anchor, "BOTTOM", 0, y) end
+end
+
+-- The frame at a mod's own spot until it's opened again, moved and locked by the mod's settings instead of everyone's:
+-- point, x, y: where (nil: where everyone's is, until moved); locked(): whether it can be dragged; moved(point, x, y):
+-- the new spot, to save. Call after Show.
+function bossHealth:SetPlace(point, x, y, isLocked, moved)
+	if not anchor then return end
+	place = {point = point or DBM.Options.HPFramePoint, x = point and x or DBM.Options.HPFrameX,
+		y = point and y or DBM.Options.HPFrameY, locked = isLocked, moved = moved}
+	setHome()
 end
 
 function bossHealth:SetHeaderText(name)
@@ -500,7 +537,7 @@ end
 
 function bossHealth:UpdateSettings()
 	if not anchor then createFrame(bossHealth) end
-	anchor:SetPoint(DBM.Options.HPFramePoint, UIParent, DBM.Options.HPFramePoint, DBM.Options.HPFrameX, DBM.Options.HPFrameY)
+	setHome()
 	for i, v in ipairs(bars) do
 		updateBarStyle(v, i)
 	end

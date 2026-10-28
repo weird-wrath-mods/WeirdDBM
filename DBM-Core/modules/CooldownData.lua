@@ -60,7 +60,7 @@ private.cooldownData = {
 		{field = "cd", pct = -10, talent = 47507, rank = 1}, -- Aspiration
 		{field = "cd", pct = -20, talent = 47507, rank = 2}, -- Aspiration
 	}},
-	[47788] = {buff = 47788, dur = 10, cd = 180, power = 25, role = "ext", class = "PRIEST", mods = { -- Guardian Spirit
+	[47788] = {buff = 47788, dur = 10, cd = 180, power = 30, role = "ext", class = "PRIEST", mods = { -- Guardian Spirit
 	}},
 	[31821] = {buff = 31821, dur = 6, cd = 120, power = 15, role = "ext", class = "PALADIN", raid = true, smashOnly = true, mods = { -- Aura Mastery
 	}},

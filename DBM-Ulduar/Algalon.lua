@@ -10,11 +10,15 @@ mod:SetWipeTime(20)
 
 -- One "Collapsing Stars" section, drawn above the General Announces area; options are listed by name,
 -- so this must come before they are added (HealthFrame is re-added below and moves in too)
-mod:GroupSpells(L.CollapsingStar, "HealthFrame", "SetIconOnStars") -- localized in every language
+mod:GroupSpells(L.CollapsingStar, "HealthFrame", "SetIconOnStars", "StarBarsLock", L.MoveStarBars) -- localized in every language
 mod:AddBoolOption("HealthFrame", true) -- Collapsing Star bars, counted from the combat log
 mod:SetBossHealthInfo() -- stars only: no Algalon bar on pull
 mod:AddSetIconOption("SetIconOnStars", nil, true, false) -- no DBM icon-setter election: every assist marks
+-- the star bars have a spot of their own (DBM's health frame elsewhere stays where it is): moved and locked here
+mod:AddBoolOption("StarBarsLock", false)
+mod:AddButton(L.MoveStarBars, function() mod:MoveStarBars() end, nil, 200, 20)
 mod:SetUsedIcons(1, 2, 3, 4) -- star marks when no raid member holds one at pull
+mod.PrefightRoom = L.Planetarium -- the cooldown plan's prefight card shows only here (CooldownPlan.lua's tellMine)
 -- the cooldown plan's card and timeline (DBM-Core/modules/CooldownPlan.lua): each optional, movable, lockable
 -- the buttons sit under the checkboxes: a button that comes first in its area has nothing to place itself below
 mod:GroupSpells(L.CooldownPlan, "CooldownPlanCard", "CooldownPlanStrip", "CooldownPlanLock", L.MoveCooldownPlan, L.TestCooldownPlan)
@@ -30,7 +34,8 @@ mod:RegisterEvents(
 	"UPDATE_WORLD_STATES",
 	"UPDATE_MOUSEOVER_UNIT",
 	"ZONE_CHANGED",
-	"ZONE_CHANGED_INDOORS"
+	"ZONE_CHANGED_INDOORS",
+	"ZONE_CHANGED_NEW_AREA"
 )
 
 mod:RegisterEventsInCombat(
@@ -65,7 +70,7 @@ local timerPhasePunch			= mod:NewTargetTimer(45, 64412, nil, false, 2, 5, nil, D
 local timerNextPhasePunch		= mod:NewNextCountTimer(15.5, 64412, nil, "Tank", 2, 5, nil, DBM_COMMON_L.TANK_ICON, true)
 -- ends a little before the pull's first hit (Quantum Strike) so tank cooldowns are surely up when it lands
 local timerFirstQuantumStrike	= mod:NewTimer(3, "TimerBeginCDs", 64395, "Tank", nil, 5, DBM_COMMON_L.TANK_ICON)
-local BEGIN_CDS_LEEWAY = 0.5
+local BEGIN_CDS_LEEWAY = 1 -- ends as the plan's pull cooldown is due (2.5s), 1s before the first Quantum Strike
 local enrageTimer				= mod:NewBerserkTimer(360, nil, nil, nil, false) -- berserk default OFF
 local timerCombatStart 			= mod:NewTimer(26, "TimerCombatStart", "Interface\\Icons\\ability_warrior_offensivestance")
 
@@ -620,6 +625,30 @@ end
 
 local starUpdate -- registered per pull: EndCombat drops it
 
+-- the health frame dressed as the star bars, at their own spot: StarBarsPermanentPos (kept by DBM for its "Permanent"),
+-- saved once they're dragged; until then right of centre, under the cooldown timeline
+local STAR_BARS_AT = {"CENTER", 329, -78}
+local function starBarsHere(self)
+	local pos = self.Options.StarBarsPermanentPos or STAR_BARS_AT
+	DBM.BossHealth:SetHeaderText(L.CollapsingStars)
+	DBM.BossHealth:SetBarSpacing(6) -- 4 stacked star bars: a bit under the default 8px gap
+	DBM.BossHealth:SetHeaderOffset(2) -- a little clear of the first bar
+	DBM.BossHealth:SetPlace(pos and pos[1], pos and pos[2], pos and pos[3], function() return self.Options.StarBarsLock end,
+		function(point, x, y) self.Options.StarBarsPermanentPos = {point, x, y} end)
+end
+
+-- Move (the options): the star bars with stand-ins, to be dragged where they go, or hidden again; not in a fight
+function mod:MoveStarBars()
+	if self:IsInCombat() then return end
+	if DBM.BossHealth:IsShown() then
+		DBM.BossHealth:Hide()
+		return
+	end
+	DBM.BossHealth:Show(L.CollapsingStars)
+	starBarsHere(self)
+	for i = 1, STAR_COUNT do DBM.BossHealth:AddBoss(function() return 100 - 15 * i end, L["StarBar" .. i]) end
+end
+
 function mod:OnCombatStart(delay)
 	self:SetStage(1)
 	clearStars()
@@ -630,9 +659,7 @@ function mod:OnCombatStart(delay)
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:RegisterEvent(e) end
 	-- DBM-Core opened it under Algalon's name just before this
-	DBM.BossHealth:SetHeaderText(L.CollapsingStars)
-	DBM.BossHealth:SetBarSpacing(6) -- 4 stacked star bars: a bit under the default 8px gap
-	DBM.BossHealth:SetHeaderOffset(2) -- a little clear of the first bar
+	starBarsHere(self)
 	DBM.BossHealth:SetUpdateInterval(0.1) -- the bars slide with the 1%/s Collapse, smoothly
 	for i = 1, STAR_COUNT do
 		local row = {index = i}
@@ -735,10 +762,18 @@ function mod:UPDATE_MOUSEOVER_UNIT()
 	if self:GetUnitCreatureId("mouseover") == 32871 then DBM.CooldownPlan.CheckTanks(self) end
 end
 
+-- everyone in his room before the pull sees their part of the plan (the card, CooldownPlan.lua's Prefight); it goes
+-- when they leave
 function mod:ZONE_CHANGED()
-	if GetSubZoneText() == L.Planetarium then DBM.CooldownPlan.CheckTanks(self, true) end
+	if GetSubZoneText() == L.Planetarium then
+		DBM.CooldownPlan.CheckTanks(self, true)
+		DBM.CooldownPlan.Prefight(self)
+	else
+		DBM.CooldownPlan.HidePrefight()
+	end
 end
 mod.ZONE_CHANGED_INDOORS = mod.ZONE_CHANGED
+mod.ZONE_CHANGED_NEW_AREA = mod.ZONE_CHANGED
 
 function mod:CHAT_MSG_MONSTER_YELL(msg)
 	if matches(msg, L.Phase2) then
@@ -821,16 +856,17 @@ function starUpdate(self)
 end
 local wsWasActive = false
 
-function mod:UPDATE_WORLD_STATES()
-	if not self.inCombat then return end
-	local anyActive = false
+local function timerUp()
 	for i = 1, GetNumWorldStateUI() do
 		local _, state = GetWorldStateUIInfo(i)
-		if state == 1 then
-			anyActive = true
-			break
-		end
+		if state == 1 then return true end
 	end
+	return false
+end
+
+function mod:UPDATE_WORLD_STATES()
+	if not self.inCombat then return end
+	local anyActive = timerUp()
 	if anyActive then
 		wsWasActive = true
 	elseif wsWasActive then

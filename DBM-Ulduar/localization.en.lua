@@ -147,8 +147,9 @@ L:SetOptionLocalization({
 	SetIconOnStars			= "Set icons on Stars: requires a raid assist mouseover the stars or observe others doing it",
 	warnStarLow				= "Show special warning when Collapsing Star is low (at ~25%)",
 	CooldownPlanCard		= "Show your cooldown card: your next cooldowns, counting down",
-	CooldownPlanStrip		= "Show the cooldown timeline: the next 40 seconds of tank and raid cooldowns",
-	CooldownPlanLock		= "Lock the card and timeline in place"
+	CooldownPlanStrip		= "Show the cooldown timeline: the next 30 seconds of tank and raid cooldowns",
+	CooldownPlanLock		= "Lock the card and timeline in place",
+	StarBarsLock			= "Lock the star health bars in place"
 })
 
 L:SetMiscLocalization({
@@ -162,6 +163,10 @@ L:SetMiscLocalization({
 	CollapsingStars			= "Collapsing Stars",
 	CooldownPlan			= "Cooldown plan",
 	MoveCooldownPlan		= "Move the card and timeline",
+	MoveStarBars			= "Move the star health bars",
+	-- what each group is for, shown under its title when collapsed (DBM-GUI's GroupDesc<group name>)
+	["GroupDescCollapsing Star"] = "Health bars for each Collapsing Star, showing the amount needed to take off to pop them at safer times. Mouse over unmarked stars to mark them, each star needs to be seen once before marking can proceed.",
+	["GroupDescCooldown plan"] = "The raid leader's DBM plans every tank and raid cooldown for the fight from what each player actually has and re-plans when someone misses one. Your card counts down to your next press; the timeline shows the raid's next 30 seconds.",
 	TestCooldownPlan		= "Test them in a mock fight",
 	StarBar1				= "One",
 	StarBar2				= "Two",

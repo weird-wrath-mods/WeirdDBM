@@ -160,7 +160,7 @@ local PUNCH, SMASH, BANG, BANG_HOLD, SMASH_LANDS = 15.5, 25.5, 90.5, 11, 5
 local FIGHT = 360	-- Ascend to the Heavens
 local STACKS = 4	-- a tank takes 4 punches, then the other taunts
 local SWAP_DELAY = 4	-- ...this long after the 4th, leaving time to taunt again on a miss before the 5th
-local PULL_PRESS = 3	-- the first tank's big cooldown: Algalon reaches them ~2.3s after engaging (logs), plus reaction
+local PULL_PRESS = 2.5	-- the first tank's big cooldown: up before the first Quantum Strike lands at 3.5 (Algalon reaches them ~2.3s after engaging, in the logs)
 local SWAP_LEAD = 1	-- the incoming tank's big cooldown goes up this long before they taunt; a "Tank swap" row is that press
 local SMASH_CLEAR = 4	-- a swap with a smash landing from the press to this long after the taunt waits up to this much longer,
 local RETRY_ROOM = 9	-- but always leaving this long before the next punch: a taunt's 8s cooldown and a second to retry a miss
@@ -407,7 +407,10 @@ CP.BUBBLE_FULL, CP.BUBBLE_PHYS = "Divine Shield", "Hand of Protection" -- locali
 -- Protection each keep all three off for 2 minutes. Avenging Wrath's marker (61987) does the same for 30s, unseen; it
 -- isn't planned, it's pressed on a paladin's own schedule, so a cast re-plans what of theirs it locks (liveUse). Lay on
 -- Hands only joins on themselves, which the plan never does; Hand of Sacrifice never does.
-CP.SHIELD_GUARD, CP.WRATH = "Divine Protection", "Avenging Wrath" -- localized at load
+CP.SHIELD_GUARD, CP.WRATH, CP.LAY_ON_HANDS = "Divine Protection", "Avenging Wrath", "Lay on Hands" -- localized at load
+-- Hand of Salvation sheds threat while it's up (glyphed or not): not the opening tank's first cooldown after their pull
+-- one, while they're still building threat
+CP.SALVATION = "Hand of Salvation" -- localized at load
 local FORBEARANCE, WRATH_LOCK = 120, 30
 local function forbearing(spell) return spell == CP.BUBBLE_FULL or spell == CP.BUBBLE_PHYS or spell == CP.SHIELD_GUARD end
 local function raidDanger(a, b)
@@ -597,7 +600,9 @@ local function build(opts, rng, smashRng)
 		return false
 	end
 	local function usable(c, who)
-		if c.role == "ext" then return not (c.notSelf and c.player == who) end -- Hand of Sacrifice can't go on its caster
+		-- Hand of Sacrifice can't go on its caster; Lay on Hands on its caster puts Forbearance on them
+		-- (spell_pal_lay_on_hands), locking a paladin tank's own Divine Protection
+		if c.role == "ext" then return not ((c.notSelf or c.spell == CP.LAY_ON_HANDS) and c.player == who) end
 		return c.player == who
 	end
 
@@ -690,6 +695,7 @@ local function build(opts, rng, smashRng)
 		local who, swapAt = holder(s), starts[s + 1]
 		local segEnd = math.min(swapAt or stop, stop)
 		local c = math.max(segStart, covered[who] or segStart)
+		local opening = from == 0 and s == 1 -- the pull's stint, its tank's first cooldown after the pull's still to come
 		while c < segEnd do
 			local inFixed, nextFixed
 			for _, f in ipairs(fixed[who] or {}) do
@@ -711,6 +717,7 @@ local function build(opts, rng, smashRng)
 					-- a big one too (Barkskin as a bear's swap cooldown): its swaps are planned already, and free() keeps
 					-- it clear of them
 					if cd.role ~= "bubble" and not cd.smashOnly and not cd.trinket and usable(cd, who) and bubble(i, c) and c + cd.dur <= (nextFixed or math.huge) + 0.01
+						and not (opening and cd.spell == CP.SALVATION)
 						and not (cd.raid and besideRaid(who, c, c + cd.dur)) then
 						if free(i, c) then
 							local last = -math.huge
@@ -737,6 +744,7 @@ local function build(opts, rng, smashRng)
 				end
 				if pick then
 					use(pick, c, who)
+					opening = false
 					c = c + pool[pick].dur
 				else
 					-- at least half a second on: the soonest free time ignores the player gap, so it can land on c itself
@@ -899,8 +907,9 @@ function CP.Replan(opts)
 	for _, c in ipairs(opts.pool) do
 		if not dead[c.player] then
 			local key = c.player .. "\0" .. c.spell
-			local readyAt = c.readyAt or 0
-			if last[key] then readyAt = math.max(readyAt, last[key] + c.cd) end
+			local readyAt, back = c.readyAt or 0, opts.back and opts.back[key]
+			-- its owner's word after the use beats use + cooldown: the server can cut one short
+			if last[key] then readyAt = math.max(readyAt, back and back.at > last[key] and back.readyAt or last[key] + c.cd) end
 			if missed[key] then readyAt = math.max(readyAt, missed[key] + NOSHOW_WAIT) end
 			pool[#pool + 1] = {player = c.player, spell = c.spell, dur = c.dur, cd = c.cd, power = c.power, role = c.role, raid = c.raid, trinket = c.trinket, smashOnly = c.smashOnly, notSelf = c.notSelf, heals = c.heals, readyAt = readyAt}
 		end
@@ -1539,12 +1548,27 @@ local function liveDeath(name)
 	end
 end
 
+-- a raider says when a cooldown they used this fight is back (sooner than its full cooldown): re-plan it in
+local function heardReady(name, spell, wait)
+	if not (active and active.live) then return end
+	local t = GetTime() - pullTime
+	for _, u in ipairs(fight.uses) do
+		if u.player == name and u.spell == spell then
+			fight.back = fight.back or {}
+			fight.back[name .. "\0" .. spell] = {at = t, readyAt = t + wait}
+			replanSoon()
+			return
+		end
+	end
+end
+
 local elapsed = 0
 local function step(e)
 	if not active then ticker:Hide() return end
 	elapsed = elapsed + e
 	if elapsed < 0.2 then -- between the stepped work, the timeline still slides every frame
 		if strip and strip:IsShown() and strip.s then drawStrip(GetTime() - pullTime) end
+		if card and card:IsShown() and card.tick then card.tick(GetTime() - pullTime) end
 		return
 	end
 	elapsed = 0
@@ -1669,11 +1693,12 @@ local function replan()
 	local t = GetTime() - pullTime
 	local tanks = activeTanks()
 	if not tanks then return end
-	local tank = fight.holder == tanks[2] and 2 or fight.holder == tanks[1] and 1 or #CP.SwapTimes(0, t) % 2 + 1
+	-- swaps keep the plan's schedule, whatever Phase Punch says between them: a late taunt still lands, or the tank's
+	-- 5th stack drops their threat and forces it. Who has the boss now is the schedule's, too
+	local tank = #CP.SwapTimes(0, t) % 2 + 1
 	local rows = CP.Replan({
 		rows = active.rows, uses = fight.uses, pool = active.pool or (roster(pullTime)), tanks = tanks, tank = tank, weaker = active.weaker or weakerTank(tanks),
-		now = t, dead = fight.dead, missed = fight.missed, small = smallRaid(),
-		swaps = fight.holder and CP.SwapTimes(t, FIGHT, fight.stacks) or nil,
+		now = t, dead = fight.dead, missed = fight.missed, back = fight.back, small = smallRaid(),
 	})
 	local future = {}
 	for _, r in ipairs(rows) do
@@ -1698,7 +1723,13 @@ end
 -- the pull being fought: its boss's plan runs from pullTime, and a plan for it that arrives during the pull starts then
 local pulled -- {mod, id}
 local function startPlan()
-	local text = saved.plans[pulled.id]
+	local text, from = saved.plans[pulled.id], saved.planFrom[pulled.id]
+	-- a plan kept from another raid (plans are saved, and outlast leaving it) isn't this one's: only my own, or one
+	-- from this raid's lead or an assistant (as a plan is accepted at all), runs
+	if text and from ~= playerName and DBM:GetRaidRank(from) == 0 then
+		plog("start %s: plan from %s, not in this raid's lead", pulled.id, tostring(from))
+		return
+	end
 	if not text or not DBM.Options.CooldownPlanEnabled then
 		plog("start %s: %s", pulled.id, not text and "no plan" or "plans disabled")
 		return
@@ -1721,6 +1752,7 @@ end
 -- and again on every pull from what everyone reports then, sent before the boss starts fighting. A plan they saved
 -- or sent from the editor, or got from an assistant, is left as it is.
 local AUTO_WAIT = 2	-- for everyone's cooldowns (C) to come back after the ask (Q)
+CP.lastSent = {}	-- [plan id] = the plan text last sent: the room's checks send only a changed one, the pull always
 -- true: no plan is made or run; a boss that asks for one (CP.Prepare) gets the timeline's AoE lane on its pull, the
 -- tank lane reading WIP. Known open issues with planning on: tanks not found by Main Assist, offline tanks report
 -- nothing.
@@ -1737,34 +1769,6 @@ function CP.TankWarning(id, tanks)
 		id, #tanks == 1 and ("only " .. tanks[1] .. " is one") or "none was found")
 end
 
--- The raid leader's early warning that the tanks aren't set up (a boss module calls it when the raid gets near: its
--- room, the boss moused over): asks everyone, then finds the tanks as the plan will. Never in combat, when it's too
--- late to matter. sayTanks (reaching the room): which two it found goes to chat too, and it runs whatever the last
--- check; otherwise (a mouseover, again and again) only a warning, and not more than every 5s.
-function CP.CheckTanks(mod, sayTanks)
-	local CHECK_EVERY = 5
-	if AOE_ONLY or not saved or not DBM.Options.CooldownPlanEnabled or DBM:GetRaidRank() ~= 2 or GetNumRaidMembers() == 0
-		or mod:IsInCombat() or (not sayTanks and mod.tankCheckAt and GetTime() - mod.tankCheckAt < CHECK_EVERY) then
-		return
-	end
-	mod.tankCheckAt = GetTime()
-	send("Q")
-	DBM:Schedule(AUTO_WAIT, function()
-		local _, tanks = roster(GetTime())
-		local text = CP.TankWarning(tostring(mod.id):lower(), tanks)
-		if text then
-			RaidNotice_AddMessage(RaidWarningFrame, text, ChatTypeInfo["RAID_WARNING"])
-			DBM:AddMsg(text)
-		elseif sayTanks then
-			local function colored(name)
-				local cc = classColor(name)
-				return cc and ("|cff%02x%02x%02x%s|r"):format(cc.r * 255, cc.g * 255, cc.b * 255, name) or name
-			end
-			DBM:AddMsg(("Cooldown plan tanks: %s, then %s."):format(colored(tanks[1]), colored(tanks[2])))
-		end
-	end)
-end
-
 -- origin: the time cooldowns are counted ready from (plan time 0); quiet: nothing said when there aren't two tanks
 -- (the boss module's CheckTanks says it nearer the boss)
 local function autoPlan(id, origin, quiet)
@@ -1779,6 +1783,41 @@ local function autoPlan(id, origin, quiet)
 	saved.plans[id], saved.planFrom[id], saved.auto[id] = text, playerName, true
 	track(text)
 	return text
+end
+
+-- The raid leader's early warning that the tanks aren't set up (a boss module calls it when the raid gets near: its
+-- room, the boss moused over): asks everyone, then finds the tanks as the plan will. Never in combat, when it's too
+-- late to matter. atOnce (reaching the room): it runs whatever the last check; otherwise (a mouseover, again and
+-- again) not more than every 5s. Which tank is which, the prefight card tells each tank.
+function CP.CheckTanks(mod, atOnce)
+	local CHECK_EVERY = 5
+	if AOE_ONLY or not saved or not DBM.Options.CooldownPlanEnabled or DBM:GetRaidRank() ~= 2 or GetNumRaidMembers() == 0
+		or mod:IsInCombat() or (not atOnce and mod.tankCheckAt and GetTime() - mod.tankCheckAt < CHECK_EVERY) then
+		return
+	end
+	mod.tankCheckAt = GetTime()
+	send("Q")
+	DBM:Schedule(AUTO_WAIT, function()
+		local _, tanks = roster(GetTime())
+		local id = tostring(mod.id):lower()
+		local text = CP.TankWarning(id, tanks)
+		if text then
+			RaidNotice_AddMessage(RaidWarningFrame, text, ChatTypeInfo["RAID_WARNING"])
+			DBM:AddMsg(text)
+			return
+		end
+		-- before the pull everyone sees their part (CP.Prefight): the plan as it stands now, sent when it changed
+		local made = ownsAuto(id) and not mod:IsInCombat() and autoPlan(id, GetTime(), true)
+		if made and made ~= CP.lastSent[id] then
+			CP.lastSent[id] = made
+			for _, m in ipairs(planMessages(id, made) or {}) do send(m) end
+			CP.tellMine(id, nil, true) -- mine don't come back to me
+		elseif made then
+			-- the same plan: everyone's card back up instead (back in the room after a wipe, respawned there, or closed)
+			send("S\t" .. id)
+			CP.tellMine(id, nil, atOnce and "room" or true) -- reaching the room: the order again
+		end
+	end)
 end
 
 function CP.Prepare(mod)
@@ -1832,6 +1871,7 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 		local text = autoPlan(this.id, pullTime)
 		if not text then return end
 		local msgs, long = planMessages(this.id, text)
+		CP.lastSent[this.id] = text
 		plog("pull %s: plan made, %d lines sent%s", this.id, msgs and #msgs or 0, long and (", too long: " .. long[1]) or "")
 		for _, m in ipairs(msgs or {}) do send(m) end
 		startPlan()
@@ -1883,7 +1923,13 @@ local function sub(r)
 	end
 	return ""
 end
-local function countdown(left) return left < 60 and tostring(math.ceil(left)) or clock(left) end
+-- whole seconds, then tenths under 10 so the last seconds count down to 0.0, as the icon warnings do; rounded down,
+-- so 10 goes to 9.9
+local function countdown(left)
+	if left >= 60 then return clock(left) end
+	if left >= 10 then return tostring(math.floor(left)) end
+	return ("%.1f"):format(math.floor(left * 10) / 10)
+end
 
 -- personal card: a big countdown to my next press with the spell beside it, and the press after that on one
 -- line; right-click hides it
@@ -1909,9 +1955,34 @@ local function bubbleFirst(r, rows)
 	return CP.BubbleFor(r.time, ready(CP.BUBBLE_FULL), ready(CP.BUBBLE_PHYS)) or false
 end
 
-function showCard(rows, period, t, prepull)
+-- each cooldown of mine in rows, once, in the order they're first pressed; a hand that goes up under a bubble, the
+-- bubble on a line of its own under it (as the fight card names it, bubbleFirst)
+local function plannedLines(rows)
+	local order, subs = {}, {}
+	for _, r in ipairs(rows) do
+		if r.player == playerName then
+			if not subs[r.spell] then order[#order + 1] = r.spell subs[r.spell] = {} end
+			local b = bubbleFirst(r, rows)
+			if b ~= nil then
+				local text = b and ("under " .. b) or "no bubble ready"
+				if not subs[r.spell][text] then subs[r.spell][text] = true table.insert(subs[r.spell], text) end
+			end
+		end
+	end
+	local lines = {}
+	for _, spell in ipairs(order) do
+		lines[#lines + 1] = spell
+		for _, text in ipairs(subs[spell]) do lines[#lines + 1] = "|cffa1a1a1  " .. text .. "|r" end
+	end
+	return lines
+end
+
+-- withRole (the prefight card, CP.Prefight): instead of the countdowns, which tank I am (if I'm one) and every
+-- cooldown I'm down for, so I have them ready
+function showCard(rows, period, t, prepull, withRole)
 	local c = CP.Card(rows, period, playerName, t)
-	if not allowed("CooldownPlanCard") or not c.go and not c.next then
+	-- before the pull everyone with a use sees it, the option or not: it's how they learn their part
+	if not (withRole or allowed("CooldownPlanCard")) or not c.go and not c.next then
 		if card then card:Hide() end
 		return
 	end
@@ -1933,7 +2004,7 @@ function showCard(rows, period, t, prepull)
 		end)
 		card:SetScript("OnMouseUp", function(self, button) if button == "RightButton" then self:Hide() end end)
 		local pos = saved.cardPos
-		if pos then card:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else card:SetPoint("CENTER", 320, -160) end
+		if pos then card:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else card:SetPoint("CENTER", -202, -37) end -- left of centre, clear of DBM's info and range frames
 		applyLock()
 		card.num = card:CreateFontString(nil, "ARTWORK", "NumberFontNormalHuge")
 		-- wide enough for "2:00" at 30 (a 54 cut it to "2..."; "1:59" fit, its 1 being narrow); the spell stays put
@@ -1963,6 +2034,51 @@ function showCard(rows, period, t, prepull)
 		card.after:SetFont(friz, 13)
 		card.after:SetTextColor(0.69, 0.69, 0.69)
 		card.after:SetPoint("TOPLEFT", card.afterTime, "TOPRIGHT", 6, 0)
+		card.role = card:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+		card.role:SetFont(friz, 13)
+		card.role:SetTextColor(1, 0.82, 0)
+		card.role:SetPoint("TOPLEFT", 12, -10)
+		card.head = card:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+		card.head:SetFont(friz, 11)
+		card.head:SetTextColor(0.63, 0.63, 0.63)
+		card.head:SetText("Planned CDs")
+		card.headL, card.headR = card:CreateTexture(nil, "ARTWORK"), card:CreateTexture(nil, "ARTWORK")
+		card.headL:SetTexture(1, 1, 1, 0.2)
+		card.headL:SetHeight(1)
+		card.headL:SetPoint("RIGHT", card.head, "LEFT", -6, 0)
+		card.headR:SetTexture(1, 1, 1, 0.2)
+		card.headR:SetHeight(1)
+		card.headR:SetPoint("LEFT", card.head, "RIGHT", 6, 0)
+		card.list = card:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+		card.list:SetFont(friz, 13)
+		card.list:SetJustifyH("LEFT")
+		card.list:SetSpacing(3)
+		-- tenths need every frame (step), not just the 0.2s update
+		function card.tick(t)
+			if card.nextAt and card.nextAt - t < 10 then card.num:SetText(countdown(math.max(0, card.nextAt - t))) end
+			if card.afterAt and card.afterAt - t < 10 then card.afterTime:SetText(countdown(math.max(0, card.afterAt - t))) end
+		end
+	end
+	for _, e in ipairs({card.num, card.spell, card.sub, card.afterTime, card.after}) do if withRole then e:Hide() else e:Show() end end
+	for _, e in ipairs({card.role, card.head, card.headL, card.headR, card.list}) do if withRole then e:Show() else e:Hide() end end
+	if withRole then
+		card.nextAt, card.afterAt = nil, nil
+		card.rule:Hide()
+		local tanks = planTanks(rows)
+		local role = tanks and (tanks[1] == playerName and "You are first tank" or tanks[2] == playerName and "You are second tank")
+		card.role:SetText(role or "")
+		local y = role and -30 or -10
+		card.head:ClearAllPoints()
+		card.head:SetPoint("TOP", card, "TOP", 0, y)
+		local side = (210 - 24 - card.head:GetStringWidth() - 12) / 2
+		card.headL:SetWidth(side)
+		card.headR:SetWidth(side)
+		card.list:ClearAllPoints()
+		card.list:SetPoint("TOPLEFT", card, "TOPLEFT", 16, y - 16)
+		card.list:SetText(table.concat(plannedLines(rows), "\n"))
+		card:SetHeight(16 - y + card.list:GetHeight() + 10)
+		card:Show()
+		return
 	end
 	card.num:ClearAllPoints()
 	card.num:SetPoint("TOPLEFT", 6, -10)
@@ -1984,6 +2100,8 @@ function showCard(rows, period, t, prepull)
 	card.sub:SetText(bubbleName and "then " .. r.spell or bubbleName == false and "no bubble: skip" or c.thenTaunt and "then Taunt" or sub(r))
 	-- the press after that: the next one when the big line is NOW, else the one after the next
 	local after, afterIn = c.go and c.next or c.later, c.go and c.nextIn or c.laterIn
+	card.nextAt = not prepull and not c.go and t + c.nextIn or nil
+	card.afterAt = not prepull and after and t + afterIn or nil
 	card.rule:ClearAllPoints()
 	card.rule:SetPoint("TOPLEFT", card.num, "BOTTOMLEFT", 4, -6)
 	card.rule:SetPoint("RIGHT", -10, 0)
@@ -2132,7 +2250,7 @@ function showStrip(rows, period, t, hasTanks)
 			saved.stripPos = {p, rp, x, y}
 		end)
 		local pos = saved.stripPos
-		if pos then strip:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else strip:SetPoint("TOP", 0, -120) end
+		if pos then strip:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4]) else strip:SetPoint("TOP", 415, -358) end -- right of centre, Algalon's star bars under it
 		applyLock()
 		strip.names, strip.blocks, strip.lines, strip.swapLines = {}, {used = 0}, {used = 0}, {used = 0}
 		for i = 1, 2 do
@@ -2513,8 +2631,11 @@ function drawStrip(t)
 	end
 end
 
--- what I'm down for in a plan, so nobody learns it from the first warning sign
-local function tellMine(id)
+-- what I'm down for in a plan, so nobody learns it from the first warning sign: the card before the pull; say: the
+-- timed list in chat too (/dbm cd mine); announce: the plan's tank order in chat, for leads and healers: "room" says
+-- it (reaching the room), true only when it differs from the order last said (a plan with the tanks changed)
+CP.toldOrder = {}	-- [plan id] = the tank order last said in chat
+local function tellMine(id, say, announce)
 	if AOE_ONLY then return end -- no cooldowns shown while tank planning is off
 	local text = saved.plans[id]
 	if not text or not DBM.Options.CooldownPlanEnabled then return end
@@ -2523,16 +2644,65 @@ local function tellMine(id)
 	for _, r in ipairs(plan.rows) do
 		if r.player == playerName then list[#list + 1] = clock(r.time) .. " " .. r.spell .. reason(r) end
 	end
-	if not active then
-		shownFor = modFor(id)
-		showCard(plan.rows, plan.period, 0, true)
+	-- before the pull, only in the boss's room (its mod's PrefightRoom): anywhere else it isn't wanted
+	local mod = modFor(id)
+	if not active and not (mod and mod.PrefightRoom and GetSubZoneText() ~= mod.PrefightRoom) then
+		shownFor = mod
+		showCard(plan.rows, plan.period, 0, true, true)
+		local tanks = announce and planTanks(plan.rows)
+		local order = tanks and tanks[1] .. "\0" .. tanks[2]
+		if tanks and (announce == "room" or order ~= CP.toldOrder[id]) then
+			CP.toldOrder[id] = order
+			local function colored(name)
+				local cc = classColor(name)
+				return cc and ("|cff%02x%02x%02x%s|r"):format(cc.r * 255, cc.g * 255, cc.b * 255, name) or name
+			end
+			DBM:AddMsg(("Cooldown plan tanks: %s, then %s."):format(colored(tanks[1]), colored(tanks[2])))
+		end
 	end
-	if #list > 0 then
+	if #list > 0 and say then
 		DBM:AddMsg(("Your cooldowns on %s (%d):"):format(id, #list))
 		for _, line in ipairs(list) do DBM:AddMsg("  " .. line) end
 	end
 end
 CP.tellMine = tellMine
+
+-- the raid leader's name, nil outside a raid
+function CP.RaidLeader()
+	for i = 1, GetNumRaidMembers() do
+		local name, rank = GetRaidRosterInfo(i)
+		if rank == 2 then return name end
+	end
+end
+-- Reaching the boss's room before the pull: my card from the leader's plan, if I have it (one sent while I was away
+-- comes on the pull, which is soon enough)
+function CP.Prefight(mod)
+	local id = tostring(mod.id):lower()
+	if AOE_ONLY or not saved or not DBM.Options.CooldownPlanEnabled or mod:IsInCombat() or active then return end
+	if saved.plans[id] and saved.planFrom[id] == CP.RaidLeader() then tellMine(id, nil, "room") end
+end
+-- Out of a raid: the plans it sent go (and my own auto-made ones, made again for the next raid), so none is shown or
+-- run for a raid I've left; one I saved by hand stays
+function CP.ForgetRaidPlans()
+	if not saved then return end
+	for id in pairs(saved.plans) do
+		if saved.auto[id] or saved.planFrom[id] ~= playerName then
+			saved.plans[id], saved.planFrom[id], saved.auto[id], CP.lastSent[id] = nil, nil, nil, nil
+		end
+	end
+	if not active then
+		if card then card:Hide() end
+		if strip then strip:Hide() end
+	end
+end
+function CP.LoadedRaid()
+	if GetNumRaidMembers() > 0 then CP.inRaid = true else CP.ForgetRaidPlans() end
+end
+
+-- leaving the room before the pull
+function CP.HidePrefight()
+	if not active and card then card:Hide() end
+end
 
 -- a boss's options: lock or free the card and timeline at once; "Move" brings both up with a stand-in plan
 -- (or hides them again) so they can be placed outside a fight
@@ -2688,7 +2858,8 @@ DBM:RegisterCallback("DBM_Wipe", stop)
 
 -- comms: L = plan line, Q = ask everyone for their CDs, C = one CD's duration and cooldown,
 -- U = the plan's sender re-planned the rest of the fight, W = a hole it couldn't fill,
--- R = a plan arrived with lines missing (zoning mid-send): its sender whispers it again
+-- R = a plan arrived with lines missing (zoning mid-send): its sender whispers it again,
+-- S = the raid leader's plan is unchanged: show your prefight card from it again
 local incoming = {}
 local received = {}	-- [sender .. "\0" .. plan id] = the last send of it received whole
 local ASK_AFTER, ASK_TRIES = 3, 2	-- a plan still missing lines this long after the last one asks again, this many times
@@ -2710,6 +2881,9 @@ local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("CHAT_MSG_ADDON")
 events:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+events:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+events:RegisterEvent("RAID_ROSTER_UPDATE")
+local toldReady = {} -- [spell] = when my cooldown was last seen back (GetTime)
 for _, e in ipairs({"PLAYER_ENTERING_WORLD", "PLAYER_TALENT_UPDATE", "GLYPH_ADDED", "GLYPH_REMOVED", "GLYPH_UPDATED", "UNIT_INVENTORY_CHANGED"}) do
 	events:RegisterEvent(e)
 end
@@ -2717,13 +2891,29 @@ events:SetScript("OnEvent", function(_, event, ...)
 	if event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_TALENT_UPDATE" or event:match("^GLYPH_") or (event == "UNIT_INVENTORY_CHANGED" and ... == "player") then
 		DBM:Unschedule(computeMine)
 		DBM:Schedule(1, computeMine)
+		if event == "PLAYER_ENTERING_WORLD" then
+			-- left the raid while away (or logged out of it): the roster reads empty for a moment on loading in, so
+			-- only once it has had time to arrive
+			local SETTLE = 10
+			DBM:Unschedule(CP.LoadedRaid)
+			DBM:Schedule(SETTLE, CP.LoadedRaid)
+		end
+	elseif event == "RAID_ROSTER_UPDATE" then
+		if GetNumRaidMembers() > 0 then
+			CP.inRaid = true
+		elseif CP.inRaid then -- left it (a count of 0 on its own can be the roster not loaded yet)
+			CP.inRaid = false
+			CP.ForgetRaidPlans()
+		end
 	elseif event == "ADDON_LOADED" then
 		if ... ~= "DBM-Core" then return end
 		saved = DBM_CooldownPlans
 		CP.BUBBLE_FULL, CP.BUBBLE_PHYS = GetSpellInfo(642) or CP.BUBBLE_FULL, GetSpellInfo(10278) or CP.BUBBLE_PHYS
-		CP.WRATH, CP.SHIELD_GUARD = GetSpellInfo(31884) or CP.WRATH, GetSpellInfo(498) or CP.SHIELD_GUARD
+		CP.WRATH, CP.SHIELD_GUARD, CP.LAY_ON_HANDS = GetSpellInfo(31884) or CP.WRATH, GetSpellInfo(498) or CP.SHIELD_GUARD, GetSpellInfo(48788) or CP.LAY_ON_HANDS
+		CP.SALVATION = GetSpellInfo(1038) or CP.SALVATION
 		saved.plans, saved.mine, saved.planFrom, saved.auto = saved.plans or {}, saved.mine or {}, saved.planFrom or {}, saved.auto or {}
 		saved.mine[playerName] = saved.mine[playerName] or {}
+		saved.prefightOver = nil -- a lockout-over mark an earlier version kept: the boss's room decides now
 		reported[playerName] = saved.mine[playerName]
 		for cast, c in pairs(data) do
 			local name = GetSpellInfo(cast)
@@ -2733,6 +2923,17 @@ events:SetScript("OnEvent", function(_, event, ...)
 			end
 		end
 		for _, text in pairs(saved.plans) do track(text) end
+	elseif event == "SPELL_UPDATE_COOLDOWN" then
+		-- back sooner than last seen: the server cut it (Glyph of Guardian Spirit, when it saved no one). Say so again
+		local now = GetTime()
+		for spell, r in pairs(saved and saved.mine[playerName] or {}) do
+			local wait = readyIn(spell)
+			if wait > 0 and toldReady[spell] and now + wait < toldReady[spell] - 2 then
+				sendOne(spell, r)
+				heardReady(playerName, spell, wait) -- my own messages don't come back to me
+			end
+			toldReady[spell] = now + wait
+		end
 	elseif event == "CHAT_MSG_ADDON" then
 		local prefix, msg, _, sender = ...
 		if prefix ~= PREFIX or sender == playerName or not saved then return end
@@ -2742,6 +2943,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 			local _, spell, dur, cd, wait, power = strsplit("\t", msg)
 			reported[sender] = reported[sender] or {}
 			reported[sender][spell] = {dur = tonumber(dur), cd = tonumber(cd), power = tonumber(power), readyAt = GetTime() + (tonumber(wait) or 0)}
+			heardReady(sender, spell, tonumber(wait) or 0)
 		elseif kind == "T" then
 			-- "T\t1\t<average item level>" or "T\t0"; an older client's "T\t1" sorts last
 			local _, isTank, ilvl = strsplit("\t", msg)
@@ -2755,6 +2957,9 @@ events:SetScript("OnEvent", function(_, event, ...)
 			end
 		elseif kind == "Q" then
 			sendMine()
+		elseif kind == "S" then
+			local id = msg:sub(3)
+			if not active and sender == CP.RaidLeader() and saved.plans[id] and saved.planFrom[id] == sender then tellMine(id, nil, true) end
 		elseif kind == "R" then
 			local id = msg:sub(3)
 			if saved.planFrom[id] == playerName and saved.plans[id] then
@@ -2798,13 +3003,14 @@ events:SetScript("OnEvent", function(_, event, ...)
 				received[sender .. "\0" .. id] = sendId
 				DBM:Unschedule(askMissing, sender, id)
 				local text = table.concat(inc.lines, "\n")
+				local same = saved.plans[id] == text and saved.planFrom[id] == sender
 				saved.plans[id] = text
 				saved.planFrom[id] = sender
 				saved.auto[id] = nil
 				saved.lastPlan = id
 				track(text)
-				DBM:AddMsg(("Cooldown plan for %s received from %s."):format(id, sender))
-				tellMine(id)
+				if not same then DBM:AddMsg(("Cooldown plan for %s received from %s."):format(id, sender)) end
+				tellMine(id, nil, true)
 				-- the leader's plan made on the pull: start on it now
 				if pulled and pulled.id == id and pulled.mod:IsInCombat() and not AOE_ONLY then startPlan() end
 			end
@@ -2964,7 +3170,7 @@ end
 function DBM:CooldownPlanCommand(arg)
 	arg = trim(arg or ""):lower()
 	if arg == "mine" then
-		if saved.lastPlan then tellMine(saved.lastPlan) end
+		if saved.lastPlan then tellMine(saved.lastPlan, true) end
 		return
 	end
 	if arg == "replan" then
