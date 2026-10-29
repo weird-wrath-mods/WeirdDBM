@@ -224,6 +224,8 @@ SlashCmdList["DEADLYBOSSMODS"] = function(msg)
 		DBM:ShowVersions(false)
 	elseif cmd == "ver2" or cmd == "version2" then
 		DBM:ShowVersions(true)
+	elseif cmd == "ver3" or cmd == "version3" then
+		DBM:ShowVersions(false, true)
 	elseif cmd == "unlock" or cmd == "move" then
 		DBT:ShowMovableBar()
 	elseif cmd == "help2" then

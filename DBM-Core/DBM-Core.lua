@@ -1750,8 +1750,9 @@ do
 		end
 	end
 
-	function DBM:ShowVersions(notify)
-		local sortMe, outdatedUsers = {}, {}
+	-- toChat: the outdated WeirdDBM users said in group chat too, plain names (chat drops a message with colour codes)
+	function DBM:ShowVersions(notify, toChat)
+		local sortMe, outdatedUsers, outdatedNames = {}, {}, {}
 		for _, v in pairs(raid) do
 			tinsert(sortMe, v)
 		end
@@ -1809,6 +1810,7 @@ do
 				if sortMe[i].revision < newestWeird then
 					OldMod = OldMod + 1
 					tinsert(outdatedUsers, name)
+					tinsert(outdatedNames, 1, sortMe[i].name)
 				end
 			elseif sortMe[i].displayVersion then
 				tinsert(otherDBMUsers, name .. " (" .. sortMe[i].displayVersion .. ")")
@@ -1820,6 +1822,19 @@ do
 		self:AddMsg(L.VERSIONCHECK_OUTDATED:format(OldMod, #outdatedUsers > 0 and tconcat(outdatedUsers, ", ") or NONE), false)
 		if #otherDBMUsers > 0 then
 			self:AddMsg(L.VERSIONCHECK_OTHER_DBM:format(#otherDBMUsers, tconcat(otherDBMUsers, ", ")), false)
+		end
+		if toChat and #outdatedNames > 0 and self:IsInGroup() then
+			local channel = IsInRaid() and "RAID" or "PARTY"
+			local line = chatPrefixShort .. L.VERSIONCHECK_OUTDATED_CHAT
+			for _, name in ipairs(outdatedNames) do
+				if #line + #name + 2 > 255 then
+					SendChatMessage(line, channel)
+					line = chatPrefixShort .. name
+				else
+					line = line .. (line:sub(-1) == " " and "" or ", ") .. name
+				end
+			end
+			SendChatMessage(line, channel)
 		end
 	end
 end
