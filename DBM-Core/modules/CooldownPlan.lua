@@ -315,6 +315,11 @@ CP.SMASH_CAST, CP.BANG_CAST = SMASH_LANDS, BANG_LANDS
 local function round(t) return math.floor(t * 2 + 0.5) / 2 end
 
 local PLAYER_GAP = 10	-- least time between two planned presses by one player: time to read the card and press
+-- exploring (switches, off by default): bangQuiet: Big Bang's casts aren't tank time (Algalon hits no one while he
+-- casts), so no cooldown is spent on them and they aren't counted bare; strength: "plain" or "squared", the score's third
+-- measure becomes how much damage gets through on the tank with the boss, each half second's share (squared: weak
+-- stretches count more) summed, in place of the trinket-only time
+CP.planRules = {bangQuiet = false, strength = nil}
 local GAP_OK = 1	-- a hole this short before a planned cooldown isn't worth spending another on
 -- a variation tries each smash with a raid-wide cooldown on the tank this long before it lands (mid-buff for the 6s
 -- Divine Sacrifice, so a press up to 3s off still covers it). 0.4 of smashes: over 49 sample rosters it took smashes
@@ -467,28 +472,26 @@ local function build(opts, rng, smashRng)
 		end
 		return false
 	end
+	-- no Hand of Sacrifice (notSelf: the only one) from a swap's press to SWAP_HAND after the taunt: a healer's is two
+	-- presses (their bubble, then the hand) when healers are busiest, and a tank's would put the damage on a tank taunting
+	-- in. A damage dealer's would do, but isn't worth a rule of its own
+	local SWAP_HAND = 10
 	local function free(i, t)
 		local c = pool[i]
 		if (c.readyAt or 0) > t then return false end
+		if c.notSelf then
+			for n = 1, #swaps do
+				if t >= swaps[n] - SWAP_LEAD - 0.01 and t < swaps[n] + SWAP_HAND then return false end
+			end
+		end
 		local own = uses[i]
 		for n = 1, #own do
 			if abs(t - own[n]) < c.cd then return false end
 		end
 		if forbearing(c.spell) and locked(c.player, t, i) then return false end -- a paladin tank's Divine Protection
-		-- two trinkets pressed together is a lot at once for a tank; up together, or back to back, is fine
+		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count; a tank's two
+		-- trinkets may go up together, the card's one step, or one right after the other)
 		local mine = mineOf[c.player]
-		if c.trinket then
-			for m = 1, #mine do
-				local j = mine[m]
-				if j ~= i and pool[j].trinket then
-					local list = uses[j]
-					for n = 1, #list do
-						if abs(t - list[n]) < gap then return false end
-					end
-				end
-			end
-		end
-		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count)
 		if gap > 0 and not c.trinket then
 			for m = 1, #mine do
 				local j = mine[m]
@@ -691,6 +694,11 @@ local function build(opts, rng, smashRng)
 				if f[1] <= c + 0.01 and f[2] > c then inFixed = math.max(inFixed or 0, f[2]) end
 				if f[1] > c and (not nextFixed or f[1] < nextFixed) then nextFixed = f[1] end
 			end
+			if CP.planRules.bangQuiet then
+				for _, b in ipairs(bangCasts) do
+					if b <= c + 0.01 and b + BANG_LANDS > c then inFixed = math.max(inFixed or 0, b + BANG_LANDS) end
+				end
+			end
 			if inFixed then
 				c = inFixed
 			elseif nextFixed and nextFixed - c <= GAP_OK then
@@ -746,61 +754,165 @@ local function build(opts, rng, smashRng)
 			end
 		end
 	end
+	if CP.planRules.bangQuiet then -- the casts out of every hole
+		local cut = {}
+		for _, h in ipairs(holes) do
+			local parts = {{h[2], h[3]}}
+			for _, b in ipairs(bangCasts) do
+				local next = {}
+				for _, p in ipairs(parts) do
+					if b >= p[2] or b + BANG_LANDS <= p[1] then next[#next + 1] = p
+					else
+						if b > p[1] then next[#next + 1] = {p[1], b} end
+						if b + BANG_LANDS < p[2] then next[#next + 1] = {b + BANG_LANDS, p[2]} end
+					end
+				end
+				parts = next
+			end
+			for _, p in ipairs(parts) do cut[#cut + 1] = {h[1], p[1], p[2]} end
+		end
+		holes = cut
+	end
 	-- 4: trinkets (weak, ~10%) aren't cover on their own: first into their owner's holes, since something beats nothing,
 	-- then up with their owner's weakest cooldowns. A trinket's uses are chosen together, for the most of its owner's bare
 	-- time covered: each start a hole's or ending as a hole ends, and of the sets a cooldown apart the one covering most
 	-- (a DP over the starts in order). Over 698 sample rosters it never covered less than each hole longest first, and
-	-- covered more on a third of them
-	for i, c in ipairs(pool) do
-		if c.trinket then
-			-- the owner's holes less what their other trinkets already cover, so a second one goes after bare time
-			-- (starting as the first one ends, say) rather than onto the first
-			local left = {}
-			for _, h in ipairs(holes) do
-				if h[1] == c.player then
-					local parts = {{h[2], h[3]}}
-					for j, o in ipairs(pool) do
-						if j ~= i and o.trinket and o.player == c.player then
-							for _, u in ipairs(uses[j]) do
-								local cut = {}
-								for _, p in ipairs(parts) do
-									if u >= p[2] or u + o.dur <= p[1] then cut[#cut + 1] = p
-									else
-										if u > p[1] then cut[#cut + 1] = {p[1], u} end
-										if u + o.dur < p[2] then cut[#cut + 1] = {u + o.dur, p[2]} end
-									end
-								end
-								parts = cut
-							end
+	-- covered more on a third of them. A tank's two trinkets are chosen as a pair, below
+	-- trinket i's uses in its owner's holes, leaving out what others ({start, dur} uses of the owner's other trinkets)
+	-- cover: the starts chosen and the bare time they cover
+	local function holeUses(i, others)
+		local c = pool[i]
+		local left = {}
+		for _, h in ipairs(holes) do
+			if h[1] == c.player then
+				local parts = {{h[2], h[3]}}
+				for _, u in ipairs(others) do
+					local cut = {}
+					for _, p in ipairs(parts) do
+						if u[1] >= p[2] or u[1] + u[2] <= p[1] then cut[#cut + 1] = p
+						else
+							if u[1] > p[1] then cut[#cut + 1] = {p[1], u[1]} end
+							if u[1] + u[2] < p[2] then cut[#cut + 1] = {u[1] + u[2], p[2]} end
 						end
 					end
-					for _, p in ipairs(parts) do left[#left + 1] = p end
+					parts = cut
+				end
+				for _, p in ipairs(parts) do left[#left + 1] = p end
+			end
+		end
+		local starts, seen = {}, {}
+		for _, h in ipairs(left) do
+			for _, s in ipairs({h[1], h[2] - c.dur}) do
+				if not seen[s] and s >= from and s < stop and free(i, s) and worthIt(c, s) then
+					seen[s] = true
+					local cover = 0
+					for _, g in ipairs(left) do cover = cover + math.max(0, math.min(g[2], s + c.dur) - math.max(g[1], s)) end
+					if cover > 0 then starts[#starts + 1] = {s, cover} end
 				end
 			end
-			local starts, seen = {}, {}
-			for _, h in ipairs(left) do
-				for _, s in ipairs({h[1], h[2] - c.dur}) do
-					if not seen[s] and s >= from and s < stop and free(i, s) and worthIt(c, s) then
-						seen[s] = true
-						local cover = 0
-						for _, g in ipairs(left) do cover = cover + math.max(0, math.min(g[2], s + c.dur) - math.max(g[1], s)) end
-						if cover > 0 then starts[#starts + 1] = {s, cover} end
+		end
+		table.sort(starts, function(x, y) return x[1] < y[1] end)
+		local best, take = {[0] = 0}, {}
+		for k = 1, #starts do
+			local p = 0 -- the last start a cooldown or more before this one
+			for j = k - 1, 1, -1 do if starts[k][1] - starts[j][1] >= c.cd then p = j break end end
+			local with = starts[k][2] + best[p]
+			if with > best[k - 1] then best[k], take[k] = with, p else best[k], take[k] = best[k - 1], nil end
+		end
+		local k, picked = #starts, {}
+		while k > 0 do
+			if take[k] then table.insert(picked, 1, starts[k][1]) k = take[k] else k = k - 1 end
+		end
+		return picked, best[#starts]
+	end
+	local function asUses(i, picked)
+		local out = {}
+		for _, t in ipairs(picked) do out[#out + 1] = {t, pool[i].dur} end
+		return out
+	end
+	-- the owner's other trinkets' uses so far, as holeUses leaves them out
+	local function othersOf(i)
+		local out = {}
+		for j, o in ipairs(pool) do
+			if j ~= i and o.trinket and o.player == pool[i].player then
+				for _, u in ipairs(uses[j]) do out[#out + 1] = {u, o.dur} end
+			end
+		end
+		return out
+	end
+	local function press(i, t)
+		-- pressed with the owner's other trinket: one step on the card, as a trinket with a cooldown is
+		local along
+		for j, o in ipairs(pool) do
+			if j ~= i and o.trinket and o.player == pool[i].player then
+				for _, u in ipairs(uses[j]) do if u == t then along = o.spell end end
+			end
+		end
+		use(i, t, pool[i].player, along and "with " .. along)
+	end
+	-- the bare time of player's holes a set of {start, dur} uses covers, each second once
+	local function covered(player, list)
+		local total = 0
+		for _, h in ipairs(holes) do
+			if h[1] == player then
+				local spans = {}
+				for _, u in ipairs(list) do
+					local a, b = math.max(h[2], u[1]), math.min(h[3], u[1] + u[2])
+					if b > a then spans[#spans + 1] = {a, b} end
+				end
+				table.sort(spans, function(x, y) return x[1] < y[1] end)
+				local at = h[2]
+				for _, sp in ipairs(spans) do
+					if sp[2] > at then total = total + sp[2] - math.max(at, sp[1]) at = sp[2] end
+				end
+			end
+		end
+		return total
+	end
+	-- a tank's two trinkets chosen together: from each order, each in turn re-placed as well as it can go around the other
+	-- until neither gains, keeping the pair that covers the most of the holes between them. One after the other, the first
+	-- takes its best holes whatever that leaves the second; over 5000 sample rosters the pair cut bare time on about 6
+	-- tanks in 100 and added to it on under 1
+	local placed, byPlayer = {}, {}
+	for i, c in ipairs(pool) do
+		if c.trinket then byPlayer[c.player] = byPlayer[c.player] or {} table.insert(byPlayer[c.player], i) end
+	end
+	for player, list in pairs(byPlayer) do
+		if #list == 2 then
+			local bestPick, bestCover
+			for _, order in ipairs({{list[1], list[2]}, {list[2], list[1]}}) do
+				local a, b = order[1], order[2]
+				local pick = {[a] = (holeUses(a, {}))}
+				pick[b] = holeUses(b, asUses(a, pick[a]))
+				local function total()
+					local all = asUses(a, pick[a])
+					for _, u in ipairs(asUses(b, pick[b])) do all[#all + 1] = u end
+					return covered(player, all)
+				end
+				local cover = total()
+				for _ = 1, 4 do
+					local gained = false
+					for _, x in ipairs({a, b}) do
+						local was = pick[x]
+						pick[x] = holeUses(x, asUses(x == a and b or a, pick[x == a and b or a]))
+						local now = total()
+						if now > cover + 1e-6 then cover, gained = now, true else pick[x] = was end
 					end
+					if not gained then break end
 				end
+				if not bestCover or cover > bestCover + 1e-6 then bestPick, bestCover = pick, cover end
 			end
-			table.sort(starts, function(x, y) return x[1] < y[1] end)
-			local best, take = {[0] = 0}, {}
-			for k = 1, #starts do
-				local p = 0 -- the last start a cooldown or more before this one
-				for j = k - 1, 1, -1 do if starts[k][1] - starts[j][1] >= c.cd then p = j break end end
-				local with = starts[k][2] + best[p]
-				if with > best[k - 1] then best[k], take[k] = with, p else best[k], take[k] = best[k - 1], nil end
+			for _, i in ipairs(list) do
+				placed[i] = true
+				for _, t in ipairs(bestPick[i]) do press(i, t) end
 			end
-			local k, picked = #starts, {}
-			while k > 0 do
-				if take[k] then picked[#picked + 1] = starts[k][1] k = take[k] else k = k - 1 end
-			end
-			for n = #picked, 1, -1 do use(i, picked[n], c.player) end
+		end
+	end
+	for i, c in ipairs(pool) do
+		if c.trinket and not placed[i] then
+			-- the owner's holes less what their other trinkets already cover, so a second one goes after bare time
+			-- (starting as the first one ends, say) rather than onto the first
+			for _, t in ipairs((holeUses(i, othersOf(i)))) do press(i, t) end
 		end
 	end
 	for i, c in ipairs(pool) do
@@ -856,7 +968,25 @@ local function build(opts, rng, smashRng)
 	end
 	-- worst first: a swap without its big cooldown, tank time with nothing up, tank time with only a trinket,
 	-- a smash with no raid-wide cooldown up (also counted into the tank time at CP.SMASH_COST when compared: better)
-	return rows, problems, {bigMissed, round(uncovered), round(trinketOnly), smashBare}
+	local third = round(trinketOnly)
+	if CP.planRules.strength then
+		local through = 0
+		for x = from + 0.25, stop, 0.5 do
+			local quiet = false
+			if CP.planRules.bangQuiet then
+				for _, b in ipairs(bangCasts) do if b <= x and x < b + BANG_LANDS then quiet = true end end
+			end
+			if not quiet then
+				local who, m = holderAt(x), 1
+				for _, r in ipairs(rows) do
+					if r.target == who and (r.power or 0) > 0 and r.time <= x and x < r.time + r.dur then m = m * (1 - r.power / 100) end
+				end
+				through = through + (CP.planRules.strength == "squared" and m * m or m) / 2
+			end
+		end
+		third = round(through)
+	end
+	return rows, problems, {bigMissed, round(uncovered), third, smashBare}
 end
 
 local TRIES = 40	-- variations tried on top of the plain build, keeping the best
@@ -1587,15 +1717,23 @@ local function liveDeath(name)
 	end
 end
 
--- a raider says when a cooldown they used this fight is back (sooner than its full cooldown): re-plan it in
+-- a raider says when a cooldown they used this fight is back sooner than its full cooldown (Glyph of Guardian Spirit
+-- cut it): re-plan it in. Only one the plan has, or one they put on a tank: a report also repeats cooldowns that come
+-- back on time, and anyone's (a damage dealer's Unbreakable Armor) - re-planning on those reshuffles the tanks for nothing
 local function heardReady(name, spell, wait)
+	local EARLY = 2	-- back at least this much before its use plus its full cooldown
 	if not (active and active.live) then return end
 	local t = GetTime() - pullTime
+	local planned
+	for _, r in ipairs(active.rows) do
+		if r.player == name and r.spell == spell then planned = true break end
+	end
+	local tanks, _, cd = activeTanks(), CP.Info(name, spell)
 	for _, u in ipairs(fight.uses) do
-		if u.player == name and u.spell == spell then
+		local onTank = tanks and (u.target == tanks[1] or u.target == tanks[2])
+		if u.player == name and u.spell == spell and (planned or onTank) and not (cd and t + wait > u.time + cd - EARLY) then
 			fight.back = fight.back or {}
 			fight.back[name .. "\0" .. spell] = {at = t, readyAt = t + wait}
-			local _, cd = CP.Info(name, spell)
 			plog("%s's %s back at %.1f (used at %.1f, its full cooldown %s)", name, spell, t + wait, u.time, cd and ("%.1f"):format(u.time + cd) or "?")
 			replanSoon()
 			return
@@ -1730,6 +1868,16 @@ local function applyRows(future, from)
 	for spell, at in pairs(moved) do
 		RaidNotice_AddMessage(RaidWarningFrame, ("Your %s is now at %s"):format(spell, clock(at)), ChatTypeInfo["RAID_WARNING"])
 	end
+	local said, gone, kept = {}, {}, {}
+	for spell, at in pairs(moved) do said[#said + 1] = ("%s now at %g"):format(spell, at) end
+	for _, r in ipairs(future) do kept[r.spell .. "\0" .. r.time] = true end
+	for key, r in pairs(mine) do
+		if not kept[key] and not moved[r.spell] then gone[#gone + 1] = ("%s at %g"):format(r.spell, r.time) end
+	end
+	local list = {}
+	for _, r in ipairs(future) do list[#list + 1] = ("%g %s %s %s"):format(r.time, r.player, r.spell, r.target or "") end
+	plog("re-plan at %.1f received from %.1f: mine moved [%s], mine dropped [%s]; %s", t, from, table.concat(said, ", "),
+		table.concat(gone, ", "), table.concat(list, " | "))
 end
 
 local sendSeq = 0
@@ -1863,6 +2011,7 @@ local function autoPlan(id, origin, quiet)
 	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})))
 	saved.plans[id], saved.planFrom[id], saved.auto[id] = text, playerName, true
 	track(text)
+	plog("plan %s made: %s", id, (text:gsub("\n", " | ")))
 	if CP.PlanChanged then CP.PlanChanged(id) end
 	return text
 end
@@ -1924,7 +2073,8 @@ end
 
 DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	if not saved or not mod then return end
-	if active and active.test then stop() end
+	-- what was up goes: a mock fight, the Move button's stand-ins, a prefight card; a plan for this pull starts below
+	stop()
 	-- plan time 0 is when Algalon starts fighting: 26s of roleplay on the lockout's first pull, 8.5s after
 	-- that (JustEngagedWith's introDelay); before the first pull there's no lockout timer yet (as DBM-Ulduar's Algalon checks)
 	local intro = 0
@@ -2275,7 +2425,7 @@ local TAG_FONT = 12
 -- short names, so a block's label fits it
 local STRIP_SHORT = {
 	[48792] = "Icebound", [498] = "Div Prot", [871] = "Shield Wall", [61336] = "Surv Inst", [55233] = "Vamp Blood",
-	[51271] = "Unbr Armor", [12975] = "Last Stand", [22812] = "Barkskin", [6940] = "Hand of Sac", [1038] = "Hand of Salv",
+	[51271] = "Unbr Armor", [12975] = "Last Stand", [22812] = "Barkskin", [22842] = "Frenzied", [6940] = "Hand of Sac", [1038] = "Hand of Salv",
 	[64205] = "DSac", [48788] = "Lay on Hands", [33206] = "Pain Sup", [47788] = "Guard Spirit", [31821] = "AuraM",
 	[64763] = "Heart of Iron", [60286] = "Def Code", [68443] = "Brawler's", [60054] = "Valor Medal", [59757] = "Monarch Crab",
 	[65012] = "King Llane", [60258] = "Repulsion", [65011] = "Furnace",
@@ -2291,6 +2441,7 @@ local STRIP_COLORS = {
 	[51271] = {0.29, 0.25, 0.71}, -- Unbreakable Armor
 	[12975] = {0.54, 0.43, 0.23}, -- Last Stand
 	[22812] = {0.18, 0.55, 0.34}, -- Barkskin
+	[22842] = {0.62, 0.12, 0.30}, -- Frenzied Regeneration
 	[6940] = {0.76, 0.33, 0.50},  -- Hand of Sacrifice
 	[1038] = {0.24, 0.60, 0.24},  -- Hand of Salvation
 	[64205] = {0.11, 0.54, 0.54}, -- Divine Sacrifice
@@ -2784,10 +2935,12 @@ function CP.Prefight(mod)
 	if AOE_ONLY or not saved or not DBM.Options.CooldownPlanEnabled or mod:IsInCombat() or active then return end
 	if saved.plans[id] and saved.planFrom[id] == CP.RaidLeader() then tellMine(id, nil, "room") end
 end
--- Out of a raid: its plans go, so none is shown or run for a raid I've left
+-- Out of a raid: its plans go, so none is shown or run for a raid I've left. With the log on they stay, to look back
+-- at: a kept plan still never runs or shows in another raid unless its sender leads or assists there (startPlan,
+-- CP.Prefight)
 function CP.ForgetRaidPlans()
 	if not saved then return end
-	for id in pairs(saved.plans) do
+	for id in pairs(saved.logOn and {} or saved.plans) do
 		saved.plans[id], saved.planFrom[id], saved.auto[id], CP.lastSent[id], CP.lastInputs[id] = nil, nil, nil, nil, nil
 	end
 	if not active then
@@ -2988,7 +3141,10 @@ for _, e in ipairs({"PLAYER_ENTERING_WORLD", "PLAYER_TALENT_UPDATE", "GLYPH_ADDE
 	events:RegisterEvent(e)
 end
 events:SetScript("OnEvent", function(_, event, ...)
-	if event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_TALENT_UPDATE" or event:match("^GLYPH_") or (event == "UNIT_INVENTORY_CHANGED" and ... == "player") then
+	-- gear: none of what changes a cooldown (set pieces, trinkets) can be swapped in combat, and in combat the event
+	-- fires on every durability point a hit takes, each one a full report to the raid
+	if event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_TALENT_UPDATE" or event:match("^GLYPH_")
+		or (event == "UNIT_INVENTORY_CHANGED" and ... == "player" and not InCombatLockdown()) then
 		DBM:Unschedule(computeMine)
 		DBM:Schedule(1, computeMine)
 		if event == "PLAYER_ENTERING_WORLD" then
@@ -3118,6 +3274,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 				saved.auto[id] = nil
 				saved.lastPlan = id
 				track(text)
+				plog("plan %s from %s: %s", id, sender, (text:gsub("\n", " | ")))
 				if CP.PlanChanged then CP.PlanChanged(id) end
 				if not same then DBM:AddMsg(("Cooldown plan for %s received from %s."):format(id, sender)) end
 				tellMine(id, nil, true)

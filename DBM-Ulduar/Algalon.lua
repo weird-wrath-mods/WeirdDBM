@@ -659,13 +659,20 @@ function mod:OnCombatStart(delay)
 	playerGUID, phased, lastStarSync = UnitGUID("player"), false, 0
 	starLog:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") -- own frame: DBM filters SPELL_DAMAGE by any mod's spell list
 	for _, e in ipairs(STAR_UNIT_EVENTS) do starLog:RegisterEvent(e) end
-	-- DBM-Core opened it under Algalon's name just before this
-	starBarsHere(self)
-	DBM.BossHealth:SetUpdateInterval(0.1) -- the bars slide with the 1%/s Collapse, smoothly
+	-- DBM-Core opened it under Algalon's name just before this, and so cleared the Move button's stand-ins; with the bars
+	-- off it didn't, so they go here (unless DBM shows every boss's frame, which it opened all the same). The rows are
+	-- kept either way: marks are per row
+	local bars = self.Options.HealthFrame ~= false
+	if bars then
+		starBarsHere(self)
+		DBM.BossHealth:SetUpdateInterval(0.1) -- the bars slide with the 1%/s Collapse, smoothly
+	elseif not DBM.Options.AlwaysShowHealthFrame then
+		DBM.BossHealth:Hide()
+	end
 	for i = 1, STAR_COUNT do
 		local row = {index = i}
 		starRows[i] = row
-		DBM.BossHealth:AddBoss(function() return starBarValue(row.star) end, L["StarBar" .. i])
+		if bars then DBM.BossHealth:AddBoss(function() return starBarValue(row.star) end, L["StarBar" .. i]) end
 	end
 	self.vb.warned_preP2 = false
 	self.vb.introFixed = false
