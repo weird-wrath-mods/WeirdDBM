@@ -1184,9 +1184,10 @@ local tracked = {}
 
 -- what the plan did and why, the last LOG_MAX lines, in the saved variables (DBM_CooldownPlans.log) to read after a
 -- reload or logout
+-- the planner's log in the saved variables, for finding what it did and why; off unless /dbm cd log turns it on
 local function plog(fmt, ...)
 	local LOG_MAX = 2000 -- a fight's re-plans outlast the cooldown reports' lines (each ask is ~20) until a reload
-	if not saved then return end
+	if not saved or not saved.logOn then return end
 	local log = saved.log or {}
 	saved.log = log
 	log[#log + 1] = ("%s %.1f %s"):format(date("%H:%M:%S"), GetTime(), fmt:format(...))
@@ -3228,10 +3229,16 @@ function view.create()
 end
 
 -- /dbm cd [boss]: show that boss's plan (default Algalon); /dbm cd mine: my cooldowns in the last plan;
+-- /dbm cd log: the planner's log (saved variables) on or off;
 -- /dbm cd replan: make the plan again now (leader);
 -- /dbm cd test [missed|late|early|death]: start or stop a mock fight, with that cooldown misuse re-planned
 function DBM:CooldownPlanCommand(arg)
 	arg = trim(arg or ""):lower()
+	if arg == "log" then
+		saved.logOn = not saved.logOn or nil
+		DBM:AddMsg(("Cooldown plan log %s."):format(saved.logOn and "on: it's written to the saved variables on a reload or logout" or "off"))
+		return
+	end
 	if arg == "mine" then
 		if saved.lastPlan then tellMine(saved.lastPlan, true) end
 		return
