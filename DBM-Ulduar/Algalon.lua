@@ -1,7 +1,8 @@
 local mod	= DBM:NewMod("Algalon", "DBM-Ulduar")
 local L		= mod:GetLocalizedStrings()
 
-mod:SetRevision("20261008000000")
+mod:SetRevision("20261028000000")
+mod:SetMinSyncRevision("20261028000000") -- the cooldown plan's full reports (M) and no-shows (N) came with this one
 mod:SetCreatureID(32871)
 mod:SetEncounterID(757)
 mod:RegisterCombat("yell", L.YellPull)
