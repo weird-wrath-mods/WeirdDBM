@@ -349,12 +349,19 @@ CP.SHIELD_GUARD, CP.WRATH, CP.LAY_ON_HANDS = "Divine Protection", "Avenging Wrat
 CP.SALVATION = "Hand of Salvation" -- localized at load
 local FORBEARANCE, WRATH_LOCK = 120, 30
 local function forbearing(spell) return spell == CP.BUBBLE_FULL or spell == CP.BUBBLE_PHYS or spell == CP.SHIELD_GUARD end
+CP.dangerMemo = {} -- [a .. " " .. b] = raidDanger's answer: the fight's own times, so the same every time it's asked
 local function raidDanger(a, b)
-	if CP.SmashTimes(a, b)[1] then return true end
-	for _, w in ipairs(CP.SafeWindows(a, b)) do
-		if not w.expires and (w.kills or 0) > 0 then return true end
+	local key = a .. " " .. b
+	local known = CP.dangerMemo[key]
+	if known ~= nil then return known end
+	local danger = CP.SmashTimes(a, b)[1] ~= nil
+	if not danger then
+		for _, w in ipairs(CP.SafeWindows(a, b)) do
+			if not w.expires and (w.kills or 0) > 0 then danger = true break end
+		end
 	end
-	return false
+	CP.dangerMemo[key] = danger
+	return danger
 end
 -- Hand of Sacrifice ends once it has passed on its caster's health (spell_pal_hand_of_sacrifice_aura): in the raid's
 -- logs it lasted 6-10s on a 25-man tank, not 12, and longer on a 10-man tank, who takes less. Booked flat, overlap
@@ -424,25 +431,32 @@ local function build(opts, rng, smashRng)
 	local rows, problems, uncovered, holes = {}, {}, 0, {}
 	local bigMissed = 0
 	local uses = {}	-- [i] = fight times planned or used
-	local trinketByPool, bigByPool, raidByPool = {}, {}, {}
+	local trinketByPool, bigByPool = {}, {}
 	for _, c in ipairs(pool) do
 		if c.trinket then trinketByPool[c.player .. "\0" .. c.spell] = true end
-		if c.raid then raidByPool[c.player .. "\0" .. c.spell] = true end
 		if c.role == "big" then bigByPool[c.player .. "\0" .. c.spell] = true end
 	end
-	for i in ipairs(pool) do
+	local mineOf = {} -- [player] = their pool indices: what free(), locked() and bubble() look through
+	for i, c in ipairs(pool) do
 		uses[i] = {}
 		for _, t in ipairs(opts.used and opts.used[i] or {}) do uses[i][#uses[i] + 1] = t end
+		mineOf[c.player] = mineOf[c.player] or {}
+		table.insert(mineOf[c.player], i)
 	end
 
 	local gap = opts.playerGap or PLAYER_GAP
 	-- player's Forbearance group (forbearing) locked at t: another of it within 2 minutes either way (one at t would
 	-- lock the later one too), or their Avenging Wrath in the 30s before. self: the pool index asked about, whose own
 	-- cooldown is free()'s to check
+	local abs = math.abs -- the checks below run thousands of times a plan: numeric loops, no global lookups
+	local noOne = {}
 	local function locked(player, t, self)
-		for k, o in ipairs(pool) do
-			if k ~= self and o.player == player and forbearing(o.spell) then
-				for _, u in ipairs(uses[k]) do if math.abs(t - u) < FORBEARANCE then return true end end
+		local mine = mineOf[player] or noOne
+		for m = 1, #mine do
+			local k = mine[m]
+			if k ~= self and forbearing(pool[k].spell) then
+				local list = uses[k]
+				for n = 1, #list do if abs(t - list[n]) < FORBEARANCE then return true end end
 			end
 		end
 		for _, u in ipairs(opts.wrath and opts.wrath[player] or {}) do
@@ -456,26 +470,32 @@ local function build(opts, rng, smashRng)
 	local function free(i, t)
 		local c = pool[i]
 		if (c.readyAt or 0) > t then return false end
-		for _, u in ipairs(uses[i]) do
-			if math.abs(t - u) < c.cd then return false end
+		local own = uses[i]
+		for n = 1, #own do
+			if abs(t - own[n]) < c.cd then return false end
 		end
 		if forbearing(c.spell) and locked(c.player, t, i) then return false end -- a paladin tank's Divine Protection
 		-- two trinkets pressed together is a lot at once for a tank; up together, or back to back, is fine
+		local mine = mineOf[c.player]
 		if c.trinket then
-			for j, o in ipairs(pool) do
-				if j ~= i and o.trinket and o.player == c.player then
-					for _, u in ipairs(uses[j]) do
-						if math.abs(t - u) < gap then return false end
+			for m = 1, #mine do
+				local j = mine[m]
+				if j ~= i and pool[j].trinket then
+					local list = uses[j]
+					for n = 1, #list do
+						if abs(t - list[n]) < gap then return false end
 					end
 				end
 			end
 		end
 		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count)
 		if gap > 0 and not c.trinket then
-			for j, o in ipairs(pool) do
-				if j ~= i and o.player == c.player and not o.trinket then
-					for _, u in ipairs(uses[j]) do
-						if math.abs(t - u) < gap then return false end
+			for m = 1, #mine do
+				local j = mine[m]
+				if j ~= i and not pool[j].trinket then
+					local list = uses[j]
+					for n = 1, #list do
+						if abs(t - list[n]) < gap then return false end
 					end
 				end
 			end
@@ -485,10 +505,12 @@ local function build(opts, rng, smashRng)
 	-- the first time from t on that i is free (nil past stop)
 	local function nextFree(i, t)
 		t = math.max(t, pool[i].readyAt or 0)
-		for _ = 1, #uses[i] + 1 do
+		local list, cd = uses[i], pool[i].cd
+		for _ = 1, #list + 1 do
 			local moved
-			for _, u in ipairs(uses[i]) do
-				if math.abs(t - u) < pool[i].cd then t, moved = u + pool[i].cd, true end
+			for n = 1, #list do
+				local u = list[n]
+				if abs(t - u) < cd then t, moved = u + cd, true end
 			end
 			if not moved then return t < stop and t or nil end
 		end
@@ -506,10 +528,14 @@ local function build(opts, rng, smashRng)
 		local c = pool[i]
 		if not c.notSelf or isTank[c.player] then return true end
 		local full, phys
-		for j, b in ipairs(pool) do
-			if b.player == c.player and b.role == "bubble" then
+		local mine = mineOf[c.player]
+		for m = 1, #mine do
+			local j = mine[m]
+			local b = pool[j]
+			if b.role == "bubble" then
 				local ok = (b.readyAt or 0) <= t and not locked(c.player, t, j)
-				for _, u in ipairs(uses[j]) do if math.abs(t - u) < b.cd then ok = false end end
+				local list = uses[j]
+				for n = 1, #list do if abs(t - list[n]) < b.cd then ok = false end end
 				if ok and b.spell == CP.BUBBLE_FULL then full = j elseif ok then phys = j end
 			end
 		end
@@ -522,7 +548,7 @@ local function build(opts, rng, smashRng)
 		local b = bubble(i, t)
 		if type(b) == "number" then table.insert(uses[b], t) end -- reserved: no row, the card names it
 		if c.smashOnly then who = nil end -- the raid's, not the tank's
-		rows[#rows + 1] = {time = round(t), player = c.player, spell = c.spell, dur = c.dur, target = who, note = note, power = c.power}
+		rows[#rows + 1] = {time = round(t), player = c.player, spell = c.spell, dur = c.dur, target = who, note = note, power = c.power, raidWide = c.raid}
 		table.insert(uses[i], t)
 		if who and not c.trinket then -- a trinket isn't cover: it goes up beside cooldowns, never instead of them
 			fixed[who] = fixed[who] or {}
@@ -556,7 +582,21 @@ local function build(opts, rng, smashRng)
 	local starts = {from == 0 and PULL_PRESS or from}
 	for _, t in ipairs(swaps) do starts[#starts + 1] = t end
 	local function holder(s) return tanks[(tank + s - 2) % #tanks + 1] end
+	-- [t * 2] = who has the boss at t, for t on the half-second grid: every try of a Generate has the same swaps, so
+	-- it's made once for them (the last one kept)
+	local gridKey = table.concat(tanks, ",") .. "|" .. tank .. "|" .. table.concat(starts, ",") .. "|" .. stop
+	if CP.holderGridKey ~= gridKey then
+		local grid, s = {}, 1
+		for k = 0, math.ceil((stop + 60) * 2) do -- a question goes past stop by a cooldown's length at most
+			while starts[s + 1] and starts[s + 1] <= k / 2 do s = s + 1 end
+			grid[k] = holder(s)
+		end
+		CP.holderGrid, CP.holderGridKey = grid, gridKey
+	end
+	local holderGrid = CP.holderGrid
 	local function holderAt(t)
+		local who = holderGrid[t * 2]
+		if who then return who end
 		local s = 1
 		while starts[s + 1] and starts[s + 1] <= t do s = s + 1 end
 		return holder(s)
@@ -810,7 +850,7 @@ local function build(opts, rng, smashRng)
 	for _, hit in ipairs(CP.SmashTimes(from, stop)) do
 		local has = false
 		for _, r in ipairs(rows) do
-			if raidByPool[r.player .. "\0" .. r.spell] and r.time <= hit and hit < r.time + r.dur then has = true break end
+			if r.raidWide and r.time <= hit and hit < r.time + r.dur then has = true break end
 		end
 		if not has then smashBare = smashBare + 1 end
 	end
