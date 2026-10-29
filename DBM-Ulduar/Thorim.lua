@@ -76,7 +76,7 @@ local specWarnHardModeActivated		= mod:NewSpecialWarning("specWarnHardmode", nil
 local specWarnHardModeFailed		= mod:NewSpecialWarningEnd(62507, nil, nil, nil, 1, 2)
 
 local timerHardmode					= mod:NewTimer(150, "TimerHardmode", "Interface\\Icons\\achievement_boss_thorim", nil, nil, 0, nil, nil, nil, nil, nil, nil, nil, "at3183") -- 25 man NM log review (2022/07/10), 2:30 from 62507 SPELL_AURA_APPLIED to SPELL_AURA_REMOVED
-local timerFrostNova				= mod:NewCDTimer(25, 62605, nil, false, nil, 2, nil, DBM_COMMON_L.MAGIC_ICON)
+local timerFrostNova				= mod:NewCDTimer(25, 62605, nil, nil, nil, 2, nil, DBM_COMMON_L.MAGIC_ICON)
 local timerFrostNovaCast			= mod:NewCastTimer(2.5, 62605, nil, false, nil, 2, nil, DBM_COMMON_L.MAGIC_ICON)
 local timerFBVolley					= mod:NewCDTimer(13, 62604, nil, false) --13s on AC
 

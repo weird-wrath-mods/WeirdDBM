@@ -2475,7 +2475,7 @@ end
 --WeirdDBM one-time default migrations. When a push changes a mod option default, list it here under a NEW rev
 --and bump WEIRD_DEFAULT_REV. Each (mod, option) is force-reset to its current default exactly once per scope, then
 --never touched again (a later rev only replays its own options, so user re-customizations from earlier revs stick).
-local WEIRD_DEFAULT_REV = 15
+local WEIRD_DEFAULT_REV = 16
 local weirdDefaultMigrations = {
 	[1] = {
 		Patchwerk = {"timer_berserk"},
@@ -2557,6 +2557,10 @@ local weirdDefaultMigrations = {
 	[15] = {
 		-- Ignis Slag Pot skull on the pot target default ON
 		Ignis = {"SlagPotIcon"},
+	},
+	[16] = {
+		-- Thorim: Sif's next Frost Nova bar default ON again (its cast bar and Frostbolt Volley stay off)
+		Thorim = {"Timer62605cd"},
 	},
 }
 
