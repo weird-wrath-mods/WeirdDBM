@@ -315,11 +315,6 @@ CP.SMASH_CAST, CP.BANG_CAST = SMASH_LANDS, BANG_LANDS
 local function round(t) return math.floor(t * 2 + 0.5) / 2 end
 
 local PLAYER_GAP = 10	-- least time between two planned presses by one player: time to read the card and press
--- exploring (switches, off by default): bangQuiet: Big Bang's casts aren't tank time (Algalon hits no one while he
--- casts), so no cooldown is spent on them and they aren't counted bare; strength: "plain" or "squared", the score's third
--- measure becomes how much damage gets through on the tank with the boss, each half second's share (squared: weak
--- stretches count more) summed, in place of the trinket-only time
-CP.planRules = {bangQuiet = false, strength = nil}
 local GAP_OK = 1	-- a hole this short before a planned cooldown isn't worth spending another on
 -- a variation tries each smash with a raid-wide cooldown on the tank this long before it lands (mid-buff for the 6s
 -- Divine Sacrifice, so a press up to 3s off still covers it). 0.4 of smashes: over 49 sample rosters it took smashes
@@ -621,6 +616,7 @@ local function build(opts, rng, smashRng)
 				-- not one Forbearance now forbids (the paladin bubbled or pressed Avenging Wrath since): it's planned afresh
 				if bubble(i, r.time) == nil or forbearing(c.spell) and locked(c.player, r.time, i) then break end
 				use(i, r.time, r.target, r.note)
+				rows[#rows].kept = true -- already told to its player: step 5 leaves it where it is
 				if c.role == "big" or r.note == "Tank swap" then keptSwap[#keptSwap + 1] = r end -- the pull's or a swap's, big or the fallback
 				break
 			end
@@ -694,10 +690,9 @@ local function build(opts, rng, smashRng)
 				if f[1] <= c + 0.01 and f[2] > c then inFixed = math.max(inFixed or 0, f[2]) end
 				if f[1] > c and (not nextFixed or f[1] < nextFixed) then nextFixed = f[1] end
 			end
-			if CP.planRules.bangQuiet then
-				for _, b in ipairs(bangCasts) do
-					if b <= c + 0.01 and b + BANG_LANDS > c then inFixed = math.max(inFixed or 0, b + BANG_LANDS) end
-				end
+			-- Algalon hits no one while he casts Big Bang: nothing to cover
+			for _, b in ipairs(bangCasts) do
+				if b <= c + 0.01 and b + BANG_LANDS > c then inFixed = math.max(inFixed or 0, b + BANG_LANDS) end
 			end
 			if inFixed then
 				c = inFixed
@@ -754,7 +749,8 @@ local function build(opts, rng, smashRng)
 			end
 		end
 	end
-	if CP.planRules.bangQuiet then -- the casts out of every hole
+	do -- Big Bang's casts out of every hole: no tank time is lost there (over 5000 sample rosters, about 3s less bare a
+		-- fight, the cooldowns that covered a quiet boss covering real tank time instead)
 		local cut = {}
 		for _, h in ipairs(holes) do
 			local parts = {{h[2], h[3]}}
@@ -957,6 +953,112 @@ local function build(opts, rng, smashRng)
 		end
 		if c < h[3] then bare(h[3]) end
 	end
+	-- 5 (opts.improve, the best of the tries made again): each movable cooldown (a tank's own or a single-target external
+	-- without a bubble, not a swap's or the pull's press, nor one a re-plan keeps) taken out and put back where it leaves
+	-- the least bare tank time, then the least damage through, squared: a weak stretch costs more than the same spread thin,
+	-- so a long cooldown goes where it's needed most, not to the first hole the build reached. Its own time is always a
+	-- choice, so nothing gets worse. Over 13000 sample rosters: less bare time on 1 in 5, more on about 1 in 1000. Every half second's cover on the tank with the boss
+	-- is kept as it goes (what gets through, how many cooldowns and how many real ones), Big Bang's casts left out
+	if opts.improve then
+		local K = math.floor((stop - from) * 2)
+		local hk, quiet, mk, ck, rk = {}, {}, {}, {}, {}
+		for k = 0, K - 1 do
+			local x = from + 0.25 + k / 2
+			hk[k], mk[k], ck[k], rk[k] = holderAt(x), 1, 0, 0
+			quiet[k] = x < starts[1] -- before the pull's press nothing is up yet, as the score counts it
+			for _, b in ipairs(bangCasts) do if b <= x and x < b + BANG_LANDS then quiet[k] = true end end
+		end
+		local indexOf = {}
+		for i, c in ipairs(pool) do indexOf[c.player .. "\0" .. c.spell] = i end
+		local function span(t, dur)
+			return math.max(0, math.ceil((t - from - 0.25) * 2)), math.min(K - 1, math.ceil((t + dur - from - 0.25) * 2) - 1)
+		end
+		local function apply(r, sign) -- r's cover in (sign 1) or out (-1); a power it hasn't counts as cover all the same
+			if not r.target then return end
+			local f = 1 - (r.power or 0) / 100
+			local real = trinketByPool[r.player .. "\0" .. r.spell] and 0 or 1
+			local a, b = span(r.time, r.dur)
+			for k = a, b do
+				if hk[k] == r.target then
+					mk[k] = sign > 0 and mk[k] * f or mk[k] / f
+					ck[k], rk[k] = ck[k] + sign, rk[k] + sign * real
+				end
+			end
+		end
+		for _, r in ipairs(rows) do apply(r, 1) end
+		local BARE = 1000 -- bare time first: any of it costs more than the most a stretch's strength can
+		local function gain(r, t) -- what putting r at t changes the cost by (lower is better)
+			local f = 1 - (r.power or 0) / 100
+			local a, b = span(t, r.dur)
+			local d = 0
+			for k = a, b do
+				if hk[k] == r.target and not quiet[k] then
+					if ck[k] == 0 then d = d - BARE / 2 end
+					d = d + (mk[k] * mk[k] * f * f - mk[k] * mk[k]) / 2
+				end
+			end
+			return d
+		end
+		local swapAts = {}
+		for n = 2, #starts do swapAts[#swapAts + 1] = starts[n] end
+		local function nextSwap(t) for _, w in ipairs(swapAts) do if w > t then return w end end end
+		for _ = 1, 3 do
+			local moved = false
+			for _, r in ipairs(rows) do
+				local i = indexOf[r.player .. "\0" .. r.spell]
+				local c = i and pool[i]
+				if c and r.target and not r.kept and r.note ~= "Tank swap" and r.time > from + PULL_PRESS + 0.01 and (c.role == "self" or c.role == "big"
+					or (c.role == "ext" and not c.raid and not c.notSelf and not c.heals)) and not c.trinket and not c.smashOnly then
+					-- out: its row, its use, its cover
+					apply(r, -1)
+					for n, u in ipairs(uses[i]) do if math.abs(u - r.time) < 0.01 then table.remove(uses[i], n) break end end
+					local own
+					for n, f in ipairs(fixed[r.target] or {}) do if math.abs(f[1] - r.time) < 0.01 and math.abs(f[2] - r.time - r.dur) < 0.01 then own = n break end end
+					if own then table.remove(fixed[r.target], own) end
+					local bestT, bestD = r.time, gain(r, r.time)
+					for t = math.ceil(from + PULL_PRESS), stop - 1 do
+						local swapAt = nextSwap(t)
+						if holderAt(t + 0.25) == r.target and free(i, t) and usable(c, r.target) and not covers(r.target, t, t + r.dur)
+							and not (swapAt and t >= swapAt - SWAP_QUIET) -- nothing new on the outgoing tank so close to their swap
+							and (c.cd < BIG_CD or not swapAt or math.min(t + r.dur, swapAt) - t >= BIG_ON_HOLDER * r.dur - 0.01) then
+							local d = gain(r, t)
+							if d < bestD - 1e-9 then bestT, bestD = t, d end
+						end
+					end
+					if bestT ~= r.time then
+						moved = true
+						for _, o in ipairs(rows) do -- a trinket pressed with it stays, alone
+							if o.player == r.player and o.note == "with " .. r.spell and math.abs(o.time - r.time) < 0.01 then o.note = nil end
+						end
+						r.time = round(bestT)
+					end
+					table.insert(uses[i], r.time)
+					fixed[r.target] = fixed[r.target] or {}
+					table.insert(fixed[r.target], {r.time, r.time + r.dur})
+					apply(r, 1)
+				end
+			end
+			if not moved then break end
+		end
+		table.sort(rows, function(a, b) return a.time < b.time end)
+		-- bare and trinket-only time again, from the moved plan
+		local kept = {}
+		for _, p in ipairs(problems) do if not p:match("^nothing up on ") then kept[#kept + 1] = p end end
+		problems, uncovered, trinketOnly = kept, 0, 0
+		local runFrom
+		for k = 0, K do
+			local isBare = k < K and not quiet[k] and ck[k] == 0
+			if runFrom and (not isBare or hk[k] ~= hk[runFrom]) then -- a stretch ends where it's covered, or at a swap
+				if (k - runFrom) / 2 > GAP_OK then -- as step 3 leaves one this short unreported and uncounted
+					problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(hk[runFrom], round(from + runFrom / 2), round(from + k / 2))
+					uncovered = uncovered + (k - runFrom) / 2
+				end
+				runFrom = nil
+			end
+			if k < K and not quiet[k] and ck[k] > 0 and rk[k] == 0 then trinketOnly = trinketOnly + 0.5 end
+			if isBare and not runFrom then runFrom = k end
+		end
+	end
 	-- and the smashes landing with no raid-wide cooldown up: last, so it only decides between plans as good for the tanks
 	local smashBare = 0
 	for _, hit in ipairs(CP.SmashTimes(from, stop)) do
@@ -968,25 +1070,7 @@ local function build(opts, rng, smashRng)
 	end
 	-- worst first: a swap without its big cooldown, tank time with nothing up, tank time with only a trinket,
 	-- a smash with no raid-wide cooldown up (also counted into the tank time at CP.SMASH_COST when compared: better)
-	local third = round(trinketOnly)
-	if CP.planRules.strength then
-		local through = 0
-		for x = from + 0.25, stop, 0.5 do
-			local quiet = false
-			if CP.planRules.bangQuiet then
-				for _, b in ipairs(bangCasts) do if b <= x and x < b + BANG_LANDS then quiet = true end end
-			end
-			if not quiet then
-				local who, m = holderAt(x), 1
-				for _, r in ipairs(rows) do
-					if r.target == who and (r.power or 0) > 0 and r.time <= x and x < r.time + r.dur then m = m * (1 - r.power / 100) end
-				end
-				through = through + (CP.planRules.strength == "squared" and m * m or m) / 2
-			end
-		end
-		third = round(through)
-	end
-	return rows, problems, {bigMissed, round(uncovered), third, smashBare}
+	return rows, problems, {bigMissed, round(uncovered), round(trinketOnly), smashBare}
 end
 
 local TRIES = 40	-- variations tried on top of the plain build, keeping the best
@@ -1011,17 +1095,21 @@ local function seeded(seed)
 	return function()
 		seed = (seed * 1103515245 + 12345) % 2147483648
 		return seed / 2147483648
-	end
+	end, function() return seed end
 end
 local function generateOnce(opts, tries)
-	local rng, smashRng, best, bestProblems, bestScore = seeded(12345), seeded(54321)
+	local rng, rngAt = seeded(12345)
+	local smashRng, smashAt = seeded(54321)
+	local best, bestProblems, bestScore, bestFrom
 	local function try(r, s)
+		local from = {r and rngAt(), s and smashAt()} -- where its random numbers started, to build it again
 		local rows, problems, score = build(opts, r, s)
-		if not best or better(score, bestScore) then best, bestProblems, bestScore = rows, problems, score end
+		if not best or better(score, bestScore) then best, bestProblems, bestScore, bestFrom = rows, problems, score, from end
 	end
 	for n = 0, tries or TRIES do try(n > 0 and rng or nil) end
 	for _ = 1, tries and math.floor(tries / 2) or SMASH_TRIES do try(rng, smashRng) end
-	return best, bestProblems, bestScore
+	-- the best made again from its own random numbers, with step 5
+	return build(setmetatable({improve = true}, {__index = opts}), bestFrom[1] and (seeded(bestFrom[1])), bestFrom[2] and (seeded(bestFrom[2])))
 end
 
 -- opts.small (a 10-man): the plan is made both with and without a tank's short cooldown at their swaps (swapRoles:
