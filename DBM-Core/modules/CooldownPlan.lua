@@ -58,36 +58,22 @@ end
 
 local function trim(s) return s:match("^%s*(.-)%s*$") end
 
+-- a plan as CP.Format writes it: a tab-separated row per use; anything else (its header, a "--" problem) is skipped
 function CP.Parse(text)
-	local rows, errors = {}, {}
-	local n = 0
-	for raw in (text .. "\n"):gmatch("([^\n]*)\n") do
-		n = n + 1
-		local line = raw:gsub("\r", "")
-		local sep = line:find("\t") and "\t" or line:find(",") and "," or "  +"
+	local rows = {}
+	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 		local f = {}
-		for field in (line:gsub(sep, "\1") .. "\1"):gmatch("([^\1]*)\1") do f[#f + 1] = trim(field) end
+		for field in (line .. "\t"):gmatch("([^\t]*)\t") do f[#f + 1] = field end
 		local t = tonumber(f[1])
-		if t then
-			if (f[2] or "") == "" or (f[3] or "") == "" then
-				errors[#errors + 1] = ("line %d: needs time, player, cooldown"):format(n)
-			else
-				rows[#rows + 1] = {
-					time = t, player = f[2], spell = f[3], dur = tonumber(f[4]),
-					target = f[5] ~= "" and f[5] or nil, note = f[6] ~= "" and f[6] or nil,
-				}
-			end
-		end -- anything else is a header, a comment or blank
+		if t and (f[2] or "") ~= "" and (f[3] or "") ~= "" then
+			rows[#rows + 1] = {
+				time = t, player = f[2], spell = f[3], dur = tonumber(f[4]),
+				target = (f[5] or "") ~= "" and f[5] or nil, note = (f[6] or "") ~= "" and f[6] or nil,
+			}
+		end
 	end
 	table.sort(rows, function(a, b) return a.time < b.time end)
-	local first, last = rows[1], rows[#rows]
-	local period
-	if #rows > 1 and last.player == first.player and last.spell == first.spell and last.time > first.time
-		and last.note and last.note:lower():find("loop") then
-		period = last.time - first.time
-		rows[#rows] = nil
-	end
-	return {rows = rows, period = period}, errors
+	return {rows = rows}
 end
 
 -- [player][spell] = {dur = s, cd = s, readyAt = GetTime()} as reported by each player;
@@ -100,56 +86,6 @@ function CP.Info(player, spell)
 	local r = reported[player] and reported[player][spell]
 	local d = defaultByName[spell]
 	return (r and r.dur) or (d and d[1]), (r and r.cd) or (d and d[2])
-end
-
-local function rowDuration(row)
-	return row.dur or CP.Info(row.player, row.spell) or 0
-end
-
--- what's wrong with a plan given what players reported: CDs reused too soon, uncovered time, durations
--- that don't match the player's real one
-function CP.Check(plan)
-	local issues, rows, period = {}, plan.rows, plan.period
-	local uses = {}
-	for _, row in ipairs(rows) do
-		local key = row.player .. "\0" .. row.spell
-		uses[key] = uses[key] or {}
-		table.insert(uses[key], row)
-	end
-	for _, list in pairs(uses) do
-		local _, cd = CP.Info(list[1].player, list[1].spell)
-		if cd then
-			for i, row in ipairs(list) do
-				local nextTime = list[i + 1] and list[i + 1].time or (period and list[1].time + period)
-				if nextTime and nextTime - row.time < cd then
-					issues[#issues + 1] = ("%s's %s at %gs is used again at %gs, back at %gs (%gs cooldown)"):format(row.player, row.spell, row.time, nextTime, row.time + cd, cd)
-				end
-			end
-		end
-	end
-	for _, row in ipairs(rows) do
-		local dur = CP.Info(row.player, row.spell)
-		local r = reported[row.player] and reported[row.player][row.spell]
-		if row.dur and r and r.dur and math.abs(r.dur - row.dur) > 0.5 then
-			issues[#issues + 1] = ("%s's %s lasts %gs, plan says %gs"):format(row.player, row.spell, r.dur, row.dur)
-		elseif not row.dur and not dur then
-			issues[#issues + 1] = ("%s's %s: no duration known, add one to the row"):format(row.player, row.spell)
-		end
-	end
-	if #rows > 0 then
-		local stop = period and rows[1].time + period or rows[#rows].time + rowDuration(rows[#rows])
-		local covered = rows[1].time
-		for _, row in ipairs(rows) do
-			if row.time > covered + 0.5 then
-				issues[#issues + 1] = ("nothing up from %gs to %gs"):format(covered, row.time)
-			end
-			covered = math.max(covered, row.time + rowDuration(row))
-		end
-		if covered < stop - 0.5 then
-			issues[#issues + 1] = ("nothing up from %gs to %gs"):format(covered, stop)
-		end
-	end
-	return issues
 end
 
 -- Algalon's fight, in seconds from the end of the roleplay (boss_algalon_the_observer.cpp, JustEngagedWith
@@ -696,7 +632,10 @@ local function build(opts, rng, smashRng)
 			end
 		end
 	end
-	-- 3: the rest of each tank's time, the weaker tank's stints first
+	-- 3: the rest of each tank's time, the weaker tank's stints first. A big cooldown (2 minutes or more) goes up only
+	-- where most of it lands on the tank with the boss: three quarters of it before the swap at least, so none is
+	-- spent for a few seconds' cover. Over 1200 sample rosters it cost no bare tank time; shorter ones run on freely
+	local BIG_CD, BIG_ON_HOLDER = 120, 0.75
 	local order = {}
 	for s in ipairs(starts) do if holder(s) == opts.weaker then order[#order + 1] = s end end
 	for s in ipairs(starts) do if holder(s) ~= opts.weaker then order[#order + 1] = s end end
@@ -728,7 +667,8 @@ local function build(opts, rng, smashRng)
 					-- it clear of them
 					if cd.role ~= "bubble" and not cd.smashOnly and not cd.trinket and usable(cd, who) and bubble(i, c) and c + cd.dur <= (nextFixed or math.huge) + 0.01
 						and not (opening and cd.spell == CP.SALVATION)
-						and not (cd.raid and besideRaid(who, c, c + cd.dur)) then
+						and not (cd.raid and besideRaid(who, c, c + cd.dur))
+						and (not swapAt or cd.cd < BIG_CD or math.min(c + cd.dur, swapAt) - c >= BIG_ON_HOLDER * cd.dur - 0.01) then
 						if free(i, c) then
 							local last = -math.huge
 							for _, u in ipairs(uses[i]) do if u < c and u > last then last = u end end
@@ -1040,13 +980,6 @@ function CP.Format(rows, problems)
 	return table.concat(out, "\n")
 end
 
--- the first use of a row at or after fight time t, and which loop it's in
-function CP.NextUse(row, period, t)
-	if not period or t <= row.time then return row.time, 0 end
-	local k = math.ceil((t - row.time) / period)
-	return row.time + k * period, k
-end
-
 -- why a use due at GetTime() due won't happen, or nil
 function CP.NotReady(player, spell, due)
 	local unit = DBM:GetRaidUnitId(player)
@@ -1064,7 +997,7 @@ end
 -- player's side of the plan at fight time t: the next use (next, nextIn) and the one after it (later, laterIn),
 -- skipping any already cast (a raid cooldown is fire and forget: the card moves on the moment it's pressed).
 -- go: a use of mine that's due and not cast yet, until MATCH seconds late, when it counts as missed
-function CP.Card(rows, period, player, t)
+function CP.Card(rows, player, t)
 	local card = {}
 	-- a swap's cooldown and its taunt (CP.Taunts) are one step: the taunt shows under the cooldown as "then Taunt"
 	-- until the cooldown is cast, then takes the big line; once the taunt is due it takes it anyway, and the
@@ -1100,7 +1033,7 @@ function CP.Card(rows, period, player, t)
 	end
 	for _, r in ipairs(rows) do
 		if shown(r) then
-			local due = CP.NextUse(r, period, t - MATCH)
+			local due = r.time
 			local now = due <= t and due >= t - MATCH
 			if r.taunt and pairOf[r] and pairOf[r].done and t <= r.time + MATCH then now = true end
 			if now and (not card.go or r.taunt) then card.go = r end
@@ -1108,7 +1041,7 @@ function CP.Card(rows, period, player, t)
 	end
 	for _, r in ipairs(rows) do
 		if shown(r) and r ~= card.go then
-			local due = CP.NextUse(r, period, t)
+			local due = r.time
 			if due >= t then
 				if not card.next or due < card.nextIn + t then
 					card.later, card.laterIn = card.next, card.nextIn
@@ -1164,7 +1097,7 @@ end
 -- so one slides out under the now line instead of shrinking.
 -- {lanes = {{name = "Tank", blocks = {{from, to, row}}, tags = {{time, name}}}, {name = "AoE", blocks}},
 --  smashes, bangs, swaps, lastSwap = {time, from, to, number} (the latest swap at or before t)}
-function CP.Strip(rows, period, t, span, isRaid)
+function CP.Strip(rows, t, span, isRaid)
 	local stop = t + span
 	local tank, aoe = {name = "Tank", blocks = {}, tags = {}}, {name = "AoE", blocks = {}}
 	local strip = {lanes = {tank, aoe}, smashes = CP.SmashTimes(t - SMASH_LANDS, stop + SMASH_LANDS),
@@ -1173,27 +1106,18 @@ function CP.Strip(rows, period, t, span, isRaid)
 	local taunts = {}
 	for _, r in ipairs(rows) do
 		local dur = r.dur or CP.Info(r.player, r.spell) or 0
-		local due = CP.NextUse(r, period, t - dur)
-		while due < stop and due + dur > t do
+		local due = r.time
+		if due < stop and due + dur > t then
 			if r.target then
 				uses[r.target] = uses[r.target] or {}
 				table.insert(uses[r.target], {from = due, to = due + dur, row = r})
 			elseif isRaid(r.spell) then
 				table.insert(aoe.blocks, {from = due, to = due + dur, row = r})
 			end
-			if not period then break end
-			due = due + period
 		end
 		-- the taunts from a span back on, whether or not their cooldowns are still in view: the latest one says
 		-- whose tag is current long after the press has run out
-		if r.note == "Tank swap" then
-			local press = CP.NextUse(r, period, t - span - SWAP_LEAD)
-			while press < stop do
-				taunts[#taunts + 1] = press + SWAP_LEAD
-				if not period then break end
-				press = press + period
-			end
-		end
+		if r.note == "Tank swap" and r.time < stop then taunts[#taunts + 1] = r.time + SWAP_LEAD end
 	end
 	table.sort(taunts)
 	-- the swap that just happened, so its tag can finish sliding under the now line
@@ -1202,7 +1126,7 @@ function CP.Strip(rows, period, t, span, isRaid)
 	local function numberOf(w)
 		local n = 0
 		for _, r in ipairs(rows) do
-			if r.note == "Tank swap" and (period and CP.NextUse(r, period, w - span) or r.time) + SWAP_LEAD <= w + 0.01 then n = n + 1 end
+			if r.note == "Tank swap" and r.time + SWAP_LEAD <= w + 0.01 then n = n + 1 end
 		end
 		return n
 	end
@@ -1298,6 +1222,14 @@ local function planMessages(id, text, sendId)
 	return msgs
 end
 
+-- the plan sent to the raid (the leader's), and kept as the last sent; long: its lines too long to send, when nothing went
+function CP.SendPlan(id, text)
+	local msgs, long = planMessages(id, text)
+	CP.lastSent[id] = text
+	for _, m in ipairs(msgs or {}) do send(m) end
+	return msgs, long
+end
+
 -- seconds until one of my cooldowns is ready, 0 if it is
 local function readyIn(spell)
 	local start, duration = GetSpellCooldown(spell)
@@ -1340,8 +1272,7 @@ local function sendMine()
 	send(iTank() and ("T\t1\t%d"):format(myItemLevel()) or "T\t0")
 end
 
--- my cooldowns from talents, glyphs and gear; [name] = true for the ones CooldownData knows
-local computed = {}
+-- my cooldowns from talents, glyphs and gear
 local function computeMine()
 	local talentRank, mainTab, mainPoints, inMain = {}, nil, -1, {}
 	for tab = 1, GetNumTalentTabs() do
@@ -1390,51 +1321,13 @@ local function computeMine()
 	-- Hand of Sacrifice ends once it has passed on my maximum health (spell_pal_hand_of_sacrifice_aura): on a tank
 	-- taking TANK_DTPS that's well under its 12s
 	local was = saved.mine[playerName]
-	for name in pairs(was) do if defaultByName[name] then was[name] = nil end end -- dropped talents or gear
-	wipe(computed)
-	for cast, v in pairs(mine) do
-		local name = GetSpellInfo(cast)
-		computed[name] = true
-		was[name] = v
-	end
+	wipe(was) -- dropped talents or gear go
+	for cast, v in pairs(mine) do was[GetSpellInfo(cast)] = v end
 	sendMine()
 end
 
 local function track(text)
 	for _, row in ipairs((CP.Parse(text)).rows) do tracked[row.spell] = true end
-end
-
--- for a cooldown CooldownData doesn't know (another trinket, say), measured on first use
-local function learn(spell, field, value)
-	if computed[spell] then return end
-	local mine = saved.mine[playerName]
-	mine[spell] = mine[spell] or {}
-	if mine[spell][field] and math.abs(mine[spell][field] - value) < 0.5 then return end
-	mine[spell][field] = value
-	sendOne(spell, mine[spell])
-end
-
-local function learnDuration(spell, unit)
-	for i = 1, 40 do
-		local name, _, _, _, _, duration, _, caster = UnitAura(unit, i)
-		if not name then return end
-		if name == spell and caster == "player" and duration and duration > 0 then
-			return learn(spell, "dur", duration)
-		end
-	end
-end
-
-local function learnCooldown(spell)
-	local _, duration = GetSpellCooldown(spell)
-	if not (duration and duration > 1.5) then
-		for slot = 13, 14 do
-			local link = GetInventoryItemLink("player", slot)
-			if link and GetItemSpell(link) == spell then
-				_, duration = GetInventoryItemCooldown("player", slot)
-			end
-		end
-	end
-	if duration and duration > 1.5 then learn(spell, "cd", duration) end
 end
 
 -- everyone in the group with what they reported, and the two tanks: the raid's main tanks, else the
@@ -1688,7 +1581,7 @@ local function step(e)
 	if active.aoeOnly then -- the raid's AoE and the swaps only: no plan, no card
 		if t > FIGHT + 10 then stop() return end -- the kill or wipe should have stopped it
 		if card then card:Hide() end
-		showStrip(active.rows, nil, t, true)
+		showStrip(active.rows, t, true)
 		return
 	end
 	if active.live then
@@ -1720,7 +1613,7 @@ local function step(e)
 		end
 	end
 	for _, row in ipairs(active.rows) do
-		local due = CP.NextUse(row, active.period, t)
+		local due = row.time
 		local left, key = due - t, row.player .. "\0" .. row.spell .. "\0" .. due
 		if left <= CHECKAHEAD and not done["check" .. key] and not active.test then
 			done["check" .. key] = true
@@ -1733,11 +1626,16 @@ local function step(e)
 			row.missed = true
 			fight.missed[row.player .. "\0" .. row.spell] = row.time
 			sayTest(("%s didn't press %s (due %s)"):format(row.player, row.spell, clock(row.time)))
+			if not active.test then send(("N\t%g\t%s\t%s"):format(row.time, row.player, row.spell)) end
 			replanSoon()
 		end
 	end
-	showCard(cardRows(active.rows), active.period, t)
-	showStrip(active.rows, active.period, t, activeTanks() ~= nil)
+	-- a no-show leaves the plan: the re-plan has it again where it'll be, the timeline shows only what's to come
+	for i = #active.rows, 1, -1 do
+		if active.rows[i].missed then table.remove(active.rows, i) end
+	end
+	showCard(cardRows(active.rows), t)
+	showStrip(active.rows, t, activeTanks() ~= nil)
 end
 -- an error here would come back every frame: say the first one and keep going, so a fault in one part (the
 -- card, a re-plan) can't take the timeline down with it
@@ -1870,7 +1768,7 @@ local function startPlan()
 	active.from = saved.planFrom[pulled.id]
 	shownFor = pulled.mod
 	-- the plan's sender re-plans when cooldowns go off plan; a looping plan has no fight to re-plan
-	active.live = active.from == playerName and not active.period and activeTanks() ~= nil
+	active.live = active.from == playerName and activeTanks() ~= nil
 	plog("start %s: %d rows from %s, live %s", pulled.id, #active.rows, tostring(active.from), tostring(active.live))
 	wipe(done)
 	fight = {uses = {}, dead = {}, missed = {}}
@@ -1924,6 +1822,7 @@ local function autoPlan(id, origin, quiet)
 	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})))
 	saved.plans[id], saved.planFrom[id], saved.auto[id] = text, playerName, true
 	track(text)
+	if CP.PlanChanged then CP.PlanChanged(id) end
 	return text
 end
 
@@ -1962,8 +1861,7 @@ function CP.CheckTanks(mod, atOnce)
 			end
 		end
 		if made and made ~= CP.lastSent[id] then
-			CP.lastSent[id] = made
-			for _, m in ipairs(planMessages(id, made) or {}) do send(m) end
+			CP.SendPlan(id, made)
 			CP.tellMine(id, nil, true) -- mine don't come back to me
 		elseif made then
 			-- the same plan: everyone's card back up instead (back in the room after a wipe, respawned there, or closed)
@@ -2024,10 +1922,8 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 		if pulled ~= this or not ownsAuto(this.id) then plog("pull %s: gone before the plan", this.id) return end
 		local text = autoPlan(this.id, pullTime)
 		if not text then return end
-		local msgs, long = planMessages(this.id, text)
-		CP.lastSent[this.id] = text
+		local msgs, long = CP.SendPlan(this.id, text)
 		plog("pull %s: plan made, %d lines sent%s", this.id, msgs and #msgs or 0, long and (", too long: " .. long[1]) or "")
-		for _, m in ipairs(msgs or {}) do send(m) end
 		startPlan()
 	end)
 end)
@@ -2056,7 +1952,7 @@ function CP.Remake(id)
 		if inPull then id = pulled.id end
 		local text = autoPlan(id, inPull and pullTime or GetTime())
 		if not text then return end
-		for _, m in ipairs(planMessages(id, text) or {}) do send(m) end
+		CP.SendPlan(id, text)
 		if inPull then startPlan() end
 		DBM:AddMsg(("Cooldown plan for %s made again and sent."):format(id))
 	end)
@@ -2133,8 +2029,8 @@ end
 
 -- withRole (the prefight card, CP.Prefight): instead of the countdowns, which tank I am (if I'm one) and every
 -- cooldown I'm down for, so I have them ready
-function showCard(rows, period, t, prepull, withRole)
-	local c = CP.Card(rows, period, playerName, t)
+function showCard(rows, t, prepull, withRole)
+	local c = CP.Card(rows, playerName, t)
 	-- before the pull everyone with a use sees it, the option or not: it's how they learn their part
 	if not (withRole or allowed("CooldownPlanCard")) or not c.go and not c.next then
 		if card then card:Hide() end
@@ -2394,7 +2290,7 @@ local function stripPart(list, kind)
 	p:Show()
 	return p
 end
-function showStrip(rows, period, t, hasTanks)
+function showStrip(rows, t, hasTanks)
 	if not allowed("CooldownPlanStrip") or not hasTanks then
 		if strip then strip:Hide() end
 		return
@@ -2472,7 +2368,7 @@ function showStrip(rows, period, t, hasTanks)
 		strip.swapLayer:SetFrameLevel(strip.lineLayer:GetFrameLevel() + 30)
 	end
 	-- worked out a second further than shown, so what slides in before the next update is already there
-	strip.s = CP.Strip(rows, period, t, STRIP_SPAN + 1, function(spell) return raidByName[spell] end)
+	strip.s = CP.Strip(rows, t, STRIP_SPAN + 1, function(spell) return raidByName[spell] end)
 	if active and active.aoeOnly then
 		local tank = strip.s.lanes[1]
 		-- WIP across the whole view (and a little past, as it's redrawn between updates): the text alone, no bar
@@ -2814,7 +2710,7 @@ local function tellMine(id, say, announce)
 	local mod = modFor(id)
 	if not active and not (mod and mod.PrefightRoom and GetSubZoneText() ~= mod.PrefightRoom) then
 		shownFor = mod
-		showCard(plan.rows, plan.period, 0, true, true)
+		showCard(plan.rows, 0, true, true)
 		local tanks = announce and planTanks(plan.rows)
 		local order = tanks and tanks[1] .. "\0" .. tanks[2]
 		if tanks and (announce == "room" or order ~= CP.toldOrder[id]) then
@@ -2847,14 +2743,11 @@ function CP.Prefight(mod)
 	if AOE_ONLY or not saved or not DBM.Options.CooldownPlanEnabled or mod:IsInCombat() or active then return end
 	if saved.plans[id] and saved.planFrom[id] == CP.RaidLeader() then tellMine(id, nil, "room") end
 end
--- Out of a raid: the plans it sent go (and my own auto-made ones, made again for the next raid), so none is shown or
--- run for a raid I've left; one I saved by hand stays
+-- Out of a raid: its plans go, so none is shown or run for a raid I've left
 function CP.ForgetRaidPlans()
 	if not saved then return end
 	for id in pairs(saved.plans) do
-		if saved.auto[id] or saved.planFrom[id] ~= playerName then
-			saved.plans[id], saved.planFrom[id], saved.auto[id], CP.lastSent[id] = nil, nil, nil, nil
-		end
+		saved.plans[id], saved.planFrom[id], saved.auto[id], CP.lastSent[id], CP.lastInputs[id] = nil, nil, nil, nil, nil
 	end
 	if not active then
 		if card then card:Hide() end
@@ -3012,8 +2905,8 @@ function CP.ShowToMove(mod)
 		{time = 22, player = playerName, spell = "Your next one", dur = 10, target = playerName},
 		{time = 31, player = other, spell = "Their cooldown", dur = 12, target = other, note = "Tank swap"},
 	}
-	showCard(rows, nil, 0, true)
-	showStrip(rows, nil, 0, true)
+	showCard(rows, 0, true)
+	showStrip(rows, 0, true)
 end
 
 DBM:RegisterCallback("DBM_TimerStart", function(_, _, _, _, _, timerType)
@@ -3134,6 +3027,13 @@ events:SetScript("OnEvent", function(_, event, ...)
 				-- under the send's own id when we still know it, so it only fills in what the asker is missing
 				for _, m in ipairs(planMessages(id, saved.plans[id], sentAs[id]) or {}) do SendAddonMessage(PREFIX, m, "WHISPER", sender) end
 			end
+		elseif kind == "N" and active and sender == active.from then
+			local _, t, player, spell = strsplit("\t", msg)
+			t = tonumber(t)
+			for i = #active.rows, 1, -1 do
+				local r = active.rows[i]
+				if t and r.player == player and r.spell == spell and math.abs(r.time - t) < 0.01 then table.remove(active.rows, i) end
+			end
 		elseif kind == "U" and active and sender == active.from then
 			local _, seq, from, count, i, time, player, spell, dur, target, note = strsplit("\t", msg)
 			seq, count = tonumber(seq), tonumber(count)
@@ -3177,6 +3077,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 				saved.auto[id] = nil
 				saved.lastPlan = id
 				track(text)
+				if CP.PlanChanged then CP.PlanChanged(id) end
 				if not same then DBM:AddMsg(("Cooldown plan for %s received from %s."):format(id, sender)) end
 				tellMine(id, nil, true)
 				-- the leader's plan made on the pull: start on it now
@@ -3220,120 +3121,114 @@ events:SetScript("OnEvent", function(_, event, ...)
 			lastUsed[sourceName] = lastUsed[sourceName] or {}
 			local used = lastUsed[sourceName][spell]
 			if not used or now - used > 3 then lastUsed[sourceName][spell] = now end
-			if sourceGUID == UnitGUID("player") then
-				if sub == "SPELL_AURA_APPLIED" then
-					local unit = destGUID == sourceGUID and "player" or DBM:GetRaidUnitId(destName)
-					if unit then learnDuration(spell, unit) end
-				else
-					DBM:Schedule(0.5, learnCooldown, spell)
-				end
-			end
 		end
 	end
 end)
 
 -- editor
-local frame, editBox, editing
+-- /dbm cd's window: the plan as columns, read-only (plans are made, not written)
+local view = {lines = {}}
+local VIEW_X, VIEW_W, ROW_H = {0, 42, 126, 284, 318, 398}, {40, 82, 156, 32, 78, 92}, 15 -- time, player, cooldown, duration, target, note
 
-
-local function report(id)
-	local plan, errors = CP.Parse(editBox:GetText())
-	for _, e in ipairs(errors) do DBM:AddMsg(e) end
-	local issues = CP.Check(plan)
-	DBM:AddMsg(("Cooldown plan %s: %d uses%s, %s."):format(id, #plan.rows, plan.period and (", loops every " .. plan.period .. "s") or "", #issues == 0 and "no problems" or (#issues .. " problems")))
-	for _, issue in ipairs(issues) do DBM:AddMsg("  " .. issue) end
+local function colored(name)
+	local cc = name and classColor(name)
+	return cc and ("|cff%02x%02x%02x%s|r"):format(cc.r * 255, cc.g * 255, cc.b * 255, name) or name or ""
 end
 
-local function generate()
-	local pool, tanks = roster(GetTime())
-	tanks = {tanks[1], tanks[2]}
-	if #tanks < 2 then
-		DBM:AddMsg("Generate needs two tanks: set Main Tank and Main Assist on them in the raid frame, or have them in the group with DBM.")
-		return
+function view.line(i)
+	local line = {}
+	for k = 1, #VIEW_X do
+		local fs = view.child:CreateFontString(nil, "ARTWORK", "ChatFontNormal")
+		fs:SetPoint("TOPLEFT", VIEW_X[k], -(i - 1) * ROW_H)
+		fs:SetSize(VIEW_W[k], ROW_H)
+		fs:SetJustifyH("LEFT")
+		line[k] = fs
 	end
-	local rows, problems = CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})
-	editBox:SetText(CP.Format(rows, problems))
-	report(editing)
-	for _, p in ipairs(problems) do DBM:AddMsg("  " .. p) end
+	view.lines[i] = line
+	return line
 end
 
-local function button(text, x, onClick)
-	local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-	b:SetSize(80, 22)
-	b:SetPoint("BOTTOM", x, 16)
-	b:SetText(text)
-	b:SetScript("OnClick", onClick)
+function view.fill()
+	local f, id = view.frame, view.id
+	local rows = CP.Parse(saved.plans[id] or "").rows
+	f.title:SetText("Cooldown plan: " .. id)
+	f.sub:SetText(#rows == 0 and "no plan yet" or ("made by %s, %d uses"):format(saved.planFrom[id] or "?", #rows))
+	for i, r in ipairs(rows) do
+		local line, swap = view.lines[i] or view.line(i), r.note == "Tank swap"
+		line[1]:SetText("|cffa1a1a1" .. clock(r.time) .. "|r")
+		line[2]:SetText(colored(r.player))
+		line[3]:SetText(swap and "|cffffd100" .. r.spell .. "|r" or r.spell)
+		line[4]:SetText(r.dur and ("|cffa1a1a1%gs|r"):format(r.dur) or "")
+		line[5]:SetText(colored(r.target))
+		line[6]:SetText(r.note and ((swap and "|cffffd100" or "|cffa1a1a1") .. r.note .. "|r") or "")
+		for _, fs in ipairs(line) do fs:Show() end
+	end
+	for i = #rows + 1, #view.lines do
+		for _, fs in ipairs(view.lines[i]) do fs:Hide() end
+	end
+	view.child:SetHeight(math.max(1, #rows * ROW_H))
+	if DBM:GetRaidRank() == 2 then view.remake:Show() else view.remake:Hide() end
 end
 
-local function createEditor()
-	frame = CreateFrame("Frame", "DBMCooldownPlanEditor", UIParent)
-	frame:SetFrameStrata("DIALOG")
-	frame:SetSize(560, 380)
-	frame:SetPoint("CENTER")
-	frame:SetBackdrop({
+-- a plan made or received while the window shows it: shown as it is now
+function CP.PlanChanged(id)
+	if view.frame and view.frame:IsShown() and view.id == id then view.fill() end
+end
+
+function view.create()
+	local f = CreateFrame("Frame", "DBMCooldownPlanView", UIParent)
+	view.frame = f
+	f:SetFrameStrata("DIALOG")
+	f:SetSize(560, 380)
+	f:SetPoint("CENTER")
+	f:SetBackdrop({
 		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
 		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
 		tile = true, tileSize = 32, edgeSize = 32,
 		insets = {left = 11, right = 12, top = 12, bottom = 11},
 	})
-	frame:EnableMouse(true)
-	frame:SetMovable(true)
-	frame:RegisterForDrag("LeftButton")
-	frame:SetScript("OnDragStart", frame.StartMoving)
-	frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
-	frame.title = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-	frame.title:SetPoint("TOP", 0, -18)
-	local scroll = CreateFrame("ScrollFrame", "DBMCooldownPlanScroll", frame, "UIPanelScrollFrameTemplate")
-	scroll:SetPoint("TOPLEFT", 22, -40)
+	f:EnableMouse(true)
+	f:SetMovable(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", f.StopMovingOrSizing)
+	f.title = f:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	f.title:SetPoint("TOP", 0, -18)
+	f.sub = f:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	f.sub:SetPoint("TOP", 0, -34)
+	f.sub:SetTextColor(0.63, 0.63, 0.63)
+	for k, name in ipairs({"Time", "Player", "Cooldown", "Dur", "Target", "Note"}) do
+		local h = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+		h:SetPoint("TOPLEFT", 22 + VIEW_X[k], -54)
+		h:SetTextColor(0.63, 0.63, 0.63)
+		h:SetText(name)
+	end
+	local rule = f:CreateTexture(nil, "ARTWORK")
+	rule:SetTexture(1, 1, 1, 0.15)
+	rule:SetHeight(1)
+	rule:SetPoint("TOPLEFT", 22, -69)
+	rule:SetPoint("TOPRIGHT", -42, -69)
+	local scroll = CreateFrame("ScrollFrame", "DBMCooldownPlanViewScroll", f, "UIPanelScrollFrameTemplate")
+	scroll:SetPoint("TOPLEFT", 22, -74)
 	scroll:SetPoint("BOTTOMRIGHT", -42, 48)
-	editBox = CreateFrame("EditBox", nil, scroll)
-	editBox:SetMultiLine(true)
-	editBox:SetAutoFocus(false)
-	editBox:SetFontObject(ChatFontNormal)
-	editBox:SetWidth(490)
-	editBox:SetScript("OnEscapePressed", editBox.ClearFocus)
-	editBox:SetScript("OnTextChanged", function(self) ScrollingEdit_OnTextChanged(self, scroll) end)
-	editBox:SetScript("OnCursorChanged", ScrollingEdit_OnCursorChanged)
-	editBox:SetScript("OnUpdate", function(self, e) ScrollingEdit_OnUpdate(self, e, scroll) end)
-	scroll:SetScrollChild(editBox)
-	scroll:EnableMouse(true)
-	scroll:SetScript("OnMouseDown", function() editBox:SetFocus() end)
-	button("Generate", -180, generate)
-	button("Check", -90, function() report(editing) end)
-	button("Save", 0, function()
-		saved.plans[editing] = editBox:GetText()
-		saved.auto[editing] = nil
-		track(saved.plans[editing])
-		report(editing)
-	end)
-	button("Send", 90, function()
-		if DBM:GetRaidRank() == 0 then
-			DBM:AddMsg("Only the leader or an assistant can send a plan.")
-			return
-		end
-		local text = editBox:GetText()
-		local msgs, long = planMessages(editing, text)
-		if not msgs then
-			DBM:AddMsg("Cooldown plan not sent, these lines are too long (shorten their notes): " .. table.concat(long, "; "))
-			return
-		end
-		saved.plans[editing] = text
-		saved.planFrom[editing] = playerName
-		saved.auto[editing] = nil
-		saved.lastPlan = editing
-		track(text)
-		tellMine(editing)
-		for _, m in ipairs(msgs) do send(m) end
-		send("Q")
-		DBM:AddMsg("Cooldown plan sent; checking against everyone's cooldowns in 3s.")
-		DBM:Schedule(3, report, editing)
-	end)
-	button(CLOSE, 180, function() frame:Hide() end)
-	tinsert(UISpecialFrames, "DBMCooldownPlanEditor")
+	view.child = CreateFrame("Frame", nil, scroll)
+	view.child:SetSize(490, 1)
+	scroll:SetScrollChild(view.child)
+	local function button(text, x, onClick)
+		local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+		b:SetSize(80, 22)
+		b:SetPoint("BOTTOM", x, 16)
+		b:SetText(text)
+		b:SetScript("OnClick", onClick)
+		return b
+	end
+	view.remake = button("Remake", -50, function() CP.Remake(view.id) end)
+	button(CLOSE, 50, function() f:Hide() end)
+	tinsert(UISpecialFrames, "DBMCooldownPlanView")
 end
 
--- /dbm cd <boss>: edit that boss's plan (default the last one edited); /dbm cd mine: my cooldowns in the
--- last plan; /dbm cd off|on: stop or resume showing plans; /dbm cd replan: make the plan again now (leader);
+-- /dbm cd [boss]: show that boss's plan (default Algalon); /dbm cd mine: my cooldowns in the last plan;
+-- /dbm cd replan: make the plan again now (leader);
 -- /dbm cd test [missed|late|early|death]: start or stop a mock fight, with that cooldown misuse re-planned
 function DBM:CooldownPlanCommand(arg)
 	arg = trim(arg or ""):lower()
@@ -3342,7 +3237,7 @@ function DBM:CooldownPlanCommand(arg)
 		return
 	end
 	if arg == "replan" then
-		CP.Remake(saved.lastEdited or "algalon")
+		CP.Remake(view.id or "algalon")
 		return
 	end
 	local misuse = arg:match("^test%s*(%a*)$")
@@ -3350,11 +3245,8 @@ function DBM:CooldownPlanCommand(arg)
 		CP.TestFight(DBM:GetModByName("Algalon"), misuse ~= "" and misuse or nil)
 		return
 	end
-	editing = arg ~= "" and arg or saved.lastEdited or "algalon"
-	saved.lastEdited = editing
-	if not frame then createEditor() end
-	frame.title:SetText("Cooldown plan: " .. editing .. "   (time, player, cooldown, duration, target, notes)")
-	editBox:SetText(saved.plans[editing] or "")
-	frame:Show()
-	if UnitInRaid("player") or GetNumPartyMembers() > 0 then send("Q") end
+	view.id = arg ~= "" and arg or "algalon"
+	if not view.frame then view.create() end
+	view.fill()
+	view.frame:Show()
 end
