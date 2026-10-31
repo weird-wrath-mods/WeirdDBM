@@ -112,7 +112,7 @@ local function resize(frame, first)
 							end
 						elseif child2.mytype == "checkbutton" then
 							local buttonText = child2.textObj
-							buttonText:SetWidth(width - child2.widthPad - 57)
+							buttonText:SetWidth(width - child2.widthPad - 57 - (child2.indent or 0))
 							buttonText:SetText(child2.text)
 							if not child2.customPoint then
 								-- local height = buttonText:GetContentHeight() -- Don't enable this, it breaks with the classic fix as it sets the height to 1 and clumps checkbuttons together
@@ -124,7 +124,7 @@ local function resize(frame, first)
 								buttonText:SetPoint(oldPoint1, oldPoint2, oldPoint3, oldPoint4, oldPoint5)
 								-- End classic fix
 								if lastObject and lastObject.myheight then
-									child2:SetPointOld("TOPLEFT", lastObject, "TOPLEFT", 0, -lastObject.myheight)
+									child2:SetPointOld("TOPLEFT", lastObject, "TOPLEFT", child2.indentStep or 0, -lastObject.myheight)
 								else
 									child2:SetPointOld("TOPLEFT", 10, -12)
 								end

@@ -295,7 +295,7 @@ function DBM_GUI:ShowHide(forceshow)
 	end
 end
 
-local catbutton, lastButton, addSpacer
+local catbutton, lastButton, addSpacer, lastIndent
 local function addOptions(mod, catpanel, v)
 	if v == DBM_OPTION_SPACER then
 		addSpacer = true
@@ -311,6 +311,12 @@ local function addOptions(mod, catpanel, v)
 			else
 				catbutton = catpanel:CreateCheckButton(mod.localization.options[v], true)
 			end
+			-- a mod's sub-options (mod.indentOptions) sit a checkbox's width in, under the one they belong to. Each box
+			-- is placed from the one before, so it steps by the change from that one's indent; the panel's layout
+			-- (MainFramePrototype) places it with indentStep, and narrows an indented label by its indent
+			local indent = mod.indentOptions and mod.indentOptions[v] and 26 or 0
+			catbutton.indent, catbutton.indentStep = indent, indent - (lastIndent or 0)
+			lastIndent = indent
 			catbutton:SetScript("OnShow", function(self)
 				self:SetChecked(mod.Options[v])
 			end)
@@ -460,7 +466,7 @@ function DBM_GUI:CreateBossModPanel(mod)
 				if desc then
 					catpanel:CreateSpellDesc(desc)
 				end
-				catbutton, lastButton, addSpacer = nil, nil, nil
+				catbutton, lastButton, addSpacer, lastIndent = nil, nil, nil, 0
 				for _, v in ipairs(options) do
 					addOptions(mod, catpanel, v)
 				end
@@ -474,7 +480,7 @@ function DBM_GUI:CreateBossModPanel(mod)
 		if not scannedCategories[catident] and category then
 			scannedCategories[catident] = true
 			local catpanel = panel:CreateArea(mod.localization.cats[catident])
-			catbutton, lastButton, addSpacer = nil, nil, nil
+			catbutton, lastButton, addSpacer, lastIndent = nil, nil, nil, 0
 			for _, v in ipairs(category) do
 				addOptions(mod, catpanel, v)
 			end
