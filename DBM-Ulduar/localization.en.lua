@@ -140,16 +140,22 @@ L:SetTimerLocalization({
 })
 
 L:SetOptionLocalization({
-	NextCollapsingStar		= "Show timer for next Collapsing Star",
+	NextCollapsingStar		= "Show timer for next Collapsing Star (60s)",
 	TimerCombatStart		= "Show timer for start of combat",
-	TimerBeginCDs			= "Show timer to begin tank cooldowns, just before the first Quantum Strike",
+	TimerBeginCDs			= "Show timer to begin tank cooldowns, just before the first $spell:64395",
 	HealthFrame				= "Show Collapsing Star health bars",
-	SetIconOnStars			= "Set icons on Stars: requires a raid assist mouseover the stars or observe others doing it",
-	warnStarLow				= "Show special warning when Collapsing Star is low (at ~25%)",
+	SetIconOnStars			= "Set icons on Collapsing Stars (needs raid assist; mouse over each star, or have someone else do it)",
+	warnStarLow				= "Show special announce when a Collapsing Star is low (at ~25%)",
 	CooldownPlanCard		= "Show your cooldown card: your next cooldowns, counting down",
+	CooldownPlanSwaps		= "Show tank swaps on your card, for healers (\"Name taunts\")", -- no angle brackets: DBM-GUI draws option labels as HTML
 	CooldownPlanStrip		= "Show the cooldown timeline: the next 30 seconds of tank and raid cooldowns",
+	CooldownPlanStripTags	= "Show who's tanking and the swaps on the timeline",
+	CooldownPlanStripTank	= "Show the timeline's Tank lane (tank cooldowns)",
+	CooldownPlanStripAoe	= "Show the timeline's AoE lane (Cosmic Smashes, Big Bangs, star kills)",
 	CooldownPlanLock		= "Lock the card and timeline in place",
-	StarBarsLock			= "Lock the star health bars in place"
+	StarBarsLock			= "Lock the star health bars in place",
+	BigBangSign				= "Show alarm icon for $spell:64584 cast",
+	BigBangEarly			= "Show next $spell:64584 timer and alert |cffd696ff%d|r seconds sooner" -- the timeline's Big Bang name colour (CooldownPlan.lua's BANG_TEXT)
 })
 
 L:SetMiscLocalization({
@@ -161,18 +167,18 @@ L:SetMiscLocalization({
 	Phase2					= "Behold the tools of creation!",
 	CollapsingStar			= "Collapsing Star",
 	CollapsingStars			= "Collapsing Stars",
-	CooldownPlan			= "Cooldown plan",
+	FightPlan				= "Fight plan",
 	MoveCooldownPlan		= "Move the card and timeline",
 	MoveStarBars			= "Move the star health bars",
 	-- what each group is for, shown under its title when collapsed (DBM-GUI's GroupDesc<group name>)
 	["GroupDescCollapsing Star"] = "Health bars for each Collapsing Star, showing the amount needed to take off to pop them at safer times. Mouse over unmarked stars to mark them, each star needs to be seen once before marking can proceed.",
-	["GroupDescCooldown plan"] = "The raid leader's DBM plans every tank and raid cooldown for the fight from what each player actually has and re-plans when someone misses one. Your card counts down to your next press; the timeline shows the raid's next 30 seconds.",
-	TestCooldownPlan		= "Test them in a mock fight",
+	["GroupDescFight plan"] = "The raid leader's DBM plans every tank and raid cooldown for the fight from what each player actually has and re-plans when someone misses one. Your card counts down to your next press; the timeline shows the raid's next 30 seconds.",
+	TestCooldownPlan		= "Test the card and timeline in a mock fight",
 	StarBar1				= "One",
 	StarBar2				= "Two",
 	StarBar3				= "Three",
 	StarBar4				= "Four",
-	StarBarUnmarked			= "Mouseover Stars to Mark",
+	StarBarUnmarked			= "Mouse over stars to mark",
 	StarBarIgnore			= "Ignore",
 	Planetarium				= "The Celestial Planetarium", -- his room's subzone (WMOAreaTable.dbc)
 	PullCheck				= "Time until Algalon transmits distress signal= (%d+) min."

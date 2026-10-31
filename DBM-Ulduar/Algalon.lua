@@ -9,6 +9,20 @@ mod:RegisterCombat("yell", L.YellPull)
 mod:RegisterKill("yell", L.YellKill)
 mod:SetWipeTime(20)
 
+-- the Fight plan section, above Collapsing Star: the cooldown plan's card and timeline (DBM-Core/modules/CooldownPlan.lua), each optional, movable, lockable
+-- the buttons sit under the checkboxes: a button that comes first in its area has nothing to place itself below
+mod:GroupSpells(L.FightPlan, "CooldownPlanCard", "CooldownPlanSwaps", "CooldownPlanStrip", "CooldownPlanStripTags", "CooldownPlanStripTank",
+	"CooldownPlanStripAoe", "CooldownPlanLock", L.MoveCooldownPlan, L.TestCooldownPlan)
+mod:AddBoolOption("CooldownPlanCard", true)
+mod:AddBoolOption("CooldownPlanSwaps", true)
+mod:AddBoolOption("CooldownPlanStrip", true)
+mod:AddBoolOption("CooldownPlanStripTags", true)
+mod:AddBoolOption("CooldownPlanStripTank", true)
+mod:AddBoolOption("CooldownPlanStripAoe", true)
+mod:AddBoolOption("CooldownPlanLock", false, nil, function() DBM.CooldownPlan.ApplyLock(mod) end)
+mod:AddButton(L.MoveCooldownPlan, function() DBM.CooldownPlan.ShowToMove(mod) end, nil, 260, 20)
+mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.TestFight(mod) end, nil, 260, 20) -- its label needs the width
+
 -- One "Collapsing Stars" section, drawn above the General Announces area; options are listed by name,
 -- so this must come before they are added (HealthFrame is re-added below and moves in too)
 mod:GroupSpells(L.CollapsingStar, "HealthFrame", "SetIconOnStars", "StarBarsLock", L.MoveStarBars) -- localized in every language
@@ -20,14 +34,6 @@ mod:AddBoolOption("StarBarsLock", false)
 mod:AddButton(L.MoveStarBars, function() mod:MoveStarBars() end, nil, 200, 20)
 mod:SetUsedIcons(1, 2, 3, 4) -- star marks when no raid member holds one at pull
 mod.PrefightRoom = L.Planetarium -- the cooldown plan's prefight card shows only here (CooldownPlan.lua's tellMine)
--- the cooldown plan's card and timeline (DBM-Core/modules/CooldownPlan.lua): each optional, movable, lockable
--- the buttons sit under the checkboxes: a button that comes first in its area has nothing to place itself below
-mod:GroupSpells(L.CooldownPlan, "CooldownPlanCard", "CooldownPlanStrip", "CooldownPlanLock", L.MoveCooldownPlan, L.TestCooldownPlan)
-mod:AddBoolOption("CooldownPlanCard", true)
-mod:AddBoolOption("CooldownPlanStrip", true)
-mod:AddBoolOption("CooldownPlanLock", false, nil, function() DBM.CooldownPlan.ApplyLock(mod) end)
-mod:AddButton(L.MoveCooldownPlan, function() DBM.CooldownPlan.ShowToMove(mod) end, nil, 200, 20)
-mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.TestFight(mod) end, nil, 200, 20)
 DBM.CooldownPlan.Prepare(mod) -- the raid leader's plan, made now and again on each pull
 
 mod:RegisterEvents(
@@ -41,7 +47,7 @@ mod:RegisterEvents(
 
 mod:RegisterEventsInCombat(
 	"SPELL_CAST_START 64584 64443",
-	"SPELL_CAST_SUCCESS 65108 64122 64598 62301 64412 64592 64395 65184",
+	"SPELL_CAST_SUCCESS 65108 64122 64598 62301 64412 65184",
 	"SPELL_AURA_APPLIED 64412",
 	"SPELL_AURA_APPLIED_DOSE 64412",
 	"SPELL_AURA_REMOVED 64412",
@@ -64,6 +70,10 @@ local specWarnCosmicSmash		= mod:NewSpecialWarningDodge(64596, nil, nil, nil, 2,
 local timerNextBigBang			= mod:NewNextTimer(90.5, 64584, nil, nil, nil, 2)
 local bigBangName, _, bigBangIcon = GetSpellInfo(64584)
 local timerBigBangCast			= mod:NewCastTimer(8, 64584, nil, nil, nil, 2, nil, DBM_COMMON_L.DEADLY_ICON)
+-- a personal head start on the Big Bang alert; the bars stay on the cast, since healers time the tank's healing off them
+mod:GroupSpells(64584, "BigBangSign", "BigBangEarly")
+mod:AddBoolOption("BigBangSign", true)
+mod:AddSliderOption("BigBangEarly", 0, 5, 1, 0)
 local timerNextCollapsingStar	= mod:NewTimer(60, "NextCollapsingStar", "Interface\\Icons\\INV_Enchant_EssenceCosmicGreater", nil, nil, 2, DBM_COMMON_L.HEALER_ICON)
 local timerCDCosmicSmash		= mod:NewCDTimer(25.5, 64596, nil, nil, nil, 3)
 local timerCastCosmicSmash		= mod:NewCastTimer(4.5, 64596)
@@ -611,16 +621,42 @@ local function matches(msg, str)
 	return str ~= nil and (msg == str or msg:find(str, nil, true) ~= nil)
 end
  
--- the fight's timers from the end of the intro; elapsed: how long ago that was (the first Quantum Strike restarts
--- them from it, 3.5s on)
+-- sweep: how long the sign counts down, to the cast's end
+local function bigBangAlert(sweep)
+	specWarnBigBang:Show()
+	if mod.Options.BigBangSign then DBM.WarningSign:Show(bigBangIcon, sweep, bigBangName:upper(), "Interface\\AddOns\\DBM-Core\\sounds\\alarm1.wav") end -- the sweep times the cast for the raid
+	if mod:IsTank() then
+		specWarnBigBang:Play("defensive")
+	else
+		specWarnBigBang:Play("findshelter")
+	end
+end
+
+local earlyBy, earlyAt = 0, nil
+local function earlyBigBang()
+	earlyAt = GetTime()
+	bigBangAlert(8 + earlyBy)
+end
+
+-- due: seconds until the next cast starts, which comes on a fixed 90.5s cycle (logs and server source agree);
+-- the Next bar runs out with the alert, early or not
+local function scheduleBigBang(due)
+	mod:Unschedule(earlyBigBang)
+	earlyBy = math.floor(tonumber(mod.Options.BigBangEarly) or 0)
+	timerNextBigBang:Start(due - earlyBy)
+	if earlyBy > 0 then mod:Schedule(due - earlyBy, earlyBigBang) end
+end
+
+-- the fight's timers from the end of the intro; elapsed: how long ago that was
 function mod:startTimers(elapsed)
 	elapsed = elapsed or 0
+	earlyAt = nil
+	scheduleBigBang(90 - elapsed)
 	startNextPunch(self, 1, 15.5 - elapsed)
 	timerNextCollapsingStar:Start(16.5 - elapsed)
 	timerCDCosmicSmash:Start(26 - elapsed)
 	announcePreBigBang:Cancel()
 	announcePreBigBang:Schedule(80 - elapsed)
-	timerNextBigBang:Start(90 - elapsed)
 	enrageTimer:Start(360 - elapsed)
 end
 
@@ -675,7 +711,6 @@ function mod:OnCombatStart(delay)
 		if bars then DBM.BossHealth:AddBoss(function() return starBarValue(row.star) end, L["StarBar" .. i]) end
 	end
 	self.vb.warned_preP2 = false
-	self.vb.introFixed = false
 	-- The first pull is the one with the long intro. Before it there is no despawn timer; the server starts it (at
 	-- 60 minutes) on that pull, in the same moment as the pull yell, so it can already read 60 here. A later pull
 	-- can't see 60: Algalon comes back 20s after a wipe, so the timer has ticked by then.
@@ -704,16 +739,16 @@ end
 function mod:SPELL_CAST_START(args)
 	if args:IsSpellID(64584, 64443) then	-- Big Bang
 		timerBigBangCast:Start()
-		timerNextBigBang:Start()
 		announcePreBigBang:Cancel()
 		announcePreBigBang:Schedule(80.5)
-		specWarnBigBang:Show()
-		if self.Options.SpecWarn64584spell then DBM.WarningSign:Show(bigBangIcon, 8, bigBangName:upper(), "Interface\\AddOns\\DBM-Core\\sounds\\alarm1.wav") end -- the sweep times the cast for the raid
-		if self:IsTank() then
-			specWarnBigBang:Play("defensive")
+		-- warned early (a cast later than 10s past that is warned again): the sign's sweep is lined up with the real cast, quietly
+		if earlyAt and GetTime() - earlyAt < 10 then
+			if self.Options.BigBangSign then DBM.WarningSign:Show(bigBangIcon, 8, bigBangName:upper()) end
 		else
-			specWarnBigBang:Play("findshelter")
+			bigBangAlert(8)
 		end
+		earlyAt = nil
+		scheduleBigBang(90.5)
 	end
 end
 
@@ -725,15 +760,6 @@ function mod:SPELL_CAST_SUCCESS(args)
 		timerCDCosmicSmash:Start()
 		specWarnCosmicSmash:Show()
 		specWarnCosmicSmash:Play("watchstep")
-	elseif args:IsSpellID(64592, 64395) and not self.vb.introFixed then	-- the pull's first Quantum Strike
-		-- the server casts it 3.5s after the intro, whichever intro it was: the timers and the plan's clock run
-		-- from it, whatever the pull guessed
-		self.vb.introFixed = true
-		timerCombatStart:Stop()
-		timerFirstQuantumStrike:Stop()
-		self:UnscheduleMethod("startTimers")
-		self:startTimers(3.5)
-		if DBM.CooldownPlan.SetFightTime then DBM.CooldownPlan.SetFightTime(3.5) end
 	end
 end
 
