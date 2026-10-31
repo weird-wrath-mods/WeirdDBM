@@ -31,7 +31,8 @@ local specWarnSurgeDarkness			= mod:NewSpecialWarningDefensive(62662, nil, nil, 
 local specWarnMarkoftheFacelessYou	= mod:NewSpecialWarningMoveAway(63276, nil, nil, nil, 3, 2)
 local yellMarkoftheFaceless			= mod:NewYell(63276)
 local specWarnMarkoftheFacelessNear	= mod:NewSpecialWarningClose(63276, nil, nil, 2, 1, 2)
-local specWarnSearingFlames			= mod:NewSpecialWarningInterruptCount(62661, "HasInterrupt", nil, nil, 1, 2)
+local specWarnSearingFlames			= mod:NewSpecialWarningInterruptCount(62661, "HasInterrupt", nil, nil, 1, 2) -- 25-man's two groups
+local specWarnSearingFlamesKick		= mod:NewSpecialWarningInterrupt(62661, "HasInterrupt", nil, nil, 1, 2) -- 10-man: anyone
 
 local timerEnrage					= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
 local timerSearingFlamesCast		= mod:NewCastTimer(2, 62661, nil, nil, nil, 5, nil, DBM_COMMON_L.INTERRUPT_ICON)
@@ -137,12 +138,17 @@ function mod:SPELL_CAST_START(args)
 	local spellId = args.spellId
 	if CAST_TIME[spellId] then castEnd = GetTime() + CAST_TIME[spellId] end
 	if spellId == 62661 then	-- Searing Flames
-		-- 10-man has the interrupters for two kick groups, 25-man rotates three
-		local groups = self:IsDifficulty("normal10") and 2 or 3
-		self.vb.interruptCount = self.vb.interruptCount % groups + 1
-		local kickCount = self.vb.interruptCount
-		specWarnSearingFlames:Show(args.sourceName, kickCount)
-		specWarnSearingFlames:Play("kick"..kickCount.."r")
+		-- every 15s in 10-man, so one 10s interrupt gets every cast: no groups, whoever's up kicks. Every 8s in 25-man,
+		-- so two groups alternating, each kicking every 16s (boss_general_vezax.cpp)
+		if self:IsDifficulty("normal10") then
+			specWarnSearingFlamesKick:Show(args.sourceName)
+			specWarnSearingFlamesKick:Play("kickcast")
+		else
+			self.vb.interruptCount = self.vb.interruptCount % 2 + 1
+			local kickCount = self.vb.interruptCount
+			specWarnSearingFlames:Show(args.sourceName, kickCount)
+			specWarnSearingFlames:Play("kick"..kickCount.."r")
+		end
 		timerSearingFlamesCast:Start()
 	elseif spellId == 62662 then
 		if self:IsTanking("player", "boss1", nil, true) then--Player is current target
