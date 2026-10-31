@@ -80,6 +80,8 @@ end
 -- [player][spell] = GetTime() of their last use seen in the combat log
 local reported, lastUsed = {}, {}
 local tankReported = {} -- [player] = their average item level when their own talents say tank (T)
+local answeredAt = {} -- [player] = when their last T came, the end of their answer to an ask (Q)
+local askedAt -- when I last asked (Q)
 CP.reported, CP.lastUsed = reported, lastUsed
 
 function CP.Info(player, spell)
@@ -1472,6 +1474,7 @@ local function plog(fmt, ...)
 end
 
 local function send(msg)
+	if msg == "Q" then askedAt = GetTime() end
 	local channel = GetNumRaidMembers() > 0 and "RAID" or GetNumPartyMembers() > 0 and "PARTY"
 	if channel then SendAddonMessage(PREFIX, msg, channel) end
 end
@@ -1610,6 +1613,8 @@ end
 
 -- everyone in the group with what they reported, and the two tanks: the raid's main tanks, else the
 -- players with a big cooldown. readyAt is seconds after origin (the pull, or now for a plan made now).
+-- A tank who hasn't answered the last ask (logged off, or no DBM to answer with) has no cooldowns to plan with and
+-- may not be there at all: left out, and a Main Tank or Main Assist left out is returned as missing {name, role, offline}
 -- the tank with less maximum health gets first pick of the shared externals
 local function weakerTank(tanks)
 	local hp = {}
@@ -1629,16 +1634,19 @@ local function roster(origin)
 	local units = {"player"}
 	for i = 1, GetNumRaidMembers() do units[#units + 1] = "raid" .. i end
 	if #units == 1 then for i = 1, GetNumPartyMembers() do units[#units + 1] = "party" .. i end end
-	local pool, tanks, assists, selfTanks, seen = {}, {}, {}, {}, {}
+	local pool, tanks, assists, selfTanks, seen, missing = {}, {}, {}, {}, {}, {}
 	local now = GetTime()
 	for _, unit in ipairs(units) do
 		local name = UnitName(unit)
 		if name and not seen[name] then
 			seen[name] = true
+			local here = name == playerName or UnitIsConnected(unit) and (answeredAt[name] or -math.huge) >= (askedAt or math.huge)
 			-- the server keeps one Main Tank: the second tank is the Main Assist
-			if GetPartyAssignment("MAINTANK", unit) then tanks[#tanks + 1] = name
-			elseif GetPartyAssignment("MAINASSIST", unit) then assists[#assists + 1] = name end
-			local ilvl = name == playerName and iTank() and myItemLevel() or name ~= playerName and tankReported[name]
+			local role = GetPartyAssignment("MAINTANK", unit) and "Main Tank" or GetPartyAssignment("MAINASSIST", unit) and "Main Assist"
+			if role and not here then missing[#missing + 1] = {name = name, role = role, offline = not UnitIsConnected(unit)}
+			elseif role == "Main Tank" then tanks[#tanks + 1] = name
+			elseif role then assists[#assists + 1] = name end
+			local ilvl = name == playerName and iTank() and myItemLevel() or name ~= playerName and here and tankReported[name]
 			if ilvl then selfTanks[#selfTanks + 1] = {name = name, ilvl = ilvl, order = #selfTanks} end
 			for spell, r in pairs(reported[name] or {}) do
 				local role = roleByName[spell]
@@ -1672,7 +1680,7 @@ local function roster(origin)
 	local who = {}
 	for name, n in pairs(by) do who[#who + 1] = name .. ":" .. n end
 	plog("roster: %d cooldowns (%s); tanks %s", #pool, table.concat(who, " "), table.concat(tanks, ", "))
-	return pool, tanks
+	return pool, tanks, missing
 end
 
 -- fight
@@ -1725,7 +1733,10 @@ local function planTanks(rows)
 		first = first or r.target
 		if r.note == "Tank swap" and r.target ~= first then second = r.target break end
 	end
-	return first and second and {first, second}
+	if second then return {first, second} end
+	-- a one-tank plan has no swap and puts every cooldown on that tank
+	for _, r in ipairs(rows) do if r.target and r.target ~= first then return end end
+	return first and {first}
 end
 
 -- The running plan's two tanks, found once from its rows and kept: a re-plan after a tank dies leaves only the other
@@ -1938,6 +1949,7 @@ ticker:SetScript("OnUpdate", function(_, e)
 end)
 
 function stop()
+	if active and active.test and shownFor and shownFor.MockStarBars then shownFor:MockStarBars(false) end
 	ticker:Hide()
 	if card then card:Hide() end
 	if strip then strip:Hide() end
@@ -2009,7 +2021,7 @@ local function replan()
 				list[#list + 1] = ("%g>%s"):format(r.time + SWAP_LEAD, r.target or "?")
 			end
 		end
-		plog("tanks %s, %s; swaps fixed at %s", tanks[1], tanks[2], table.concat(list, " "))
+		plog("tanks %s, %s; swaps fixed at %s", tanks[1], tostring(tanks[2]), table.concat(list, " "))
 	end
 	-- swaps are the sent plan's, whatever Phase Punch says between them: a late taunt still lands, or the tank's 5th
 	-- stack drops their threat and forces it. Who has the boss now is the last of them past, else whoever opened
@@ -2102,23 +2114,44 @@ local function ownsAuto(id)
 end
 -- what to say when the tanks found (roster) aren't two, else nil; only clients with the cooldown plan answer the ask,
 -- so a tank on an older DBM reports nothing
-function CP.TankWarning(id, tanks)
-	if #tanks >= 2 then return end
-	return ("Cooldown plan for %s needs two tanks, and %s. Set Main Tank and Main Assist in the raid frame, or a tank's own talents must say tank."):format(
-		id, #tanks == 1 and ("only " .. tanks[1] .. " is one") or "none was found")
+-- why the named tanks aren't in the plan (roster's missing), as one clause: "Thalamier (Main Assist) is offline"
+local function whyMissing(missing)
+	local out = {}
+	for _, t in ipairs(missing or {}) do
+		out[#out + 1] = ("%s (%s) %s"):format(t.name, t.role, t.offline and "is offline" or "isn't answering")
+	end
+	return table.concat(out, " and ")
 end
 
--- origin: the time cooldowns are counted ready from (plan time 0); quiet: nothing said when there aren't two tanks
--- (the boss module's CheckTanks says it nearer the boss)
+-- no tank found: no plan
+function CP.TankWarning(id, tanks, missing)
+	if #tanks >= 1 then return end
+	return ("No cooldown plan for %s: no tank found. %sSet Main Tank and Main Assist in the raid frame, or a tank's own talents must say tank."):format(
+		id, missing and missing[1] and whyMissing(missing) .. ". " or "")
+end
+
+-- one tank found: a plan for that tank alone, said to the leader loudly so it's never one by accident; the cause first
+function CP.OneTankWarning(id, tanks, missing)
+	if #tanks ~= 1 then return end
+	return ("%s: planning %s as the only tank."):format(missing and missing[1] and whyMissing(missing) or "No Main Assist set", tanks[1])
+end
+
+-- origin: the time cooldowns are counted ready from (plan time 0); quiet: nothing said about the tanks (the boss
+-- module's CheckTanks says it nearer the boss). One tank found: their plan for the whole fight, with no swaps
 local function autoPlan(id, origin, quiet)
-	local pool, tanks = roster(origin)
+	local pool, tanks, missing = roster(origin)
 	tanks = {tanks[1], tanks[2]}
-	if #tanks < 2 then
-		plog("no plan for %s: %d tank(s)", id, #tanks)
-		if not quiet then DBM:AddMsg("No plan made. " .. CP.TankWarning(id, tanks)) end
+	local warn = CP.TankWarning(id, tanks, missing) or CP.OneTankWarning(id, tanks, missing)
+	if warn and not quiet then
+		RaidNotice_AddMessage(RaidWarningFrame, warn, ChatTypeInfo["RAID_WARNING"])
+		DBM:AddMsg(warn)
+	end
+	if #tanks < 1 then
+		plog("no plan for %s: no tank", id)
 		return
 	end
-	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid()})))
+	local text = CP.Format((CP.Generate({pool = pool, tanks = tanks, weaker = weakerTank(tanks), small = smallRaid(),
+		swaps = #tanks == 1 and {} or nil})))
 	saved.plans[id], saved.planFrom[id], saved.auto[id] = text, playerName, true
 	track(text)
 	plog("plan %s made: %s", id, (text:gsub("\n", " | ")))
@@ -2139,14 +2172,14 @@ function CP.CheckTanks(mod, atOnce)
 	mod.tankCheckAt = GetTime()
 	send("Q")
 	DBM:Schedule(AUTO_WAIT, function()
-		local pool, tanks = roster(GetTime())
+		local pool, tanks, missing = roster(GetTime())
 		local id = tostring(mod.id):lower()
-		local text = CP.TankWarning(id, tanks)
+		local text = CP.TankWarning(id, tanks, missing) or CP.OneTankWarning(id, {tanks[1], tanks[2]}, missing)
 		if text then
 			RaidNotice_AddMessage(RaidWarningFrame, text, ChatTypeInfo["RAID_WARNING"])
 			DBM:AddMsg(text)
-			return
 		end
+		if not tanks[1] then return end
 		-- before the pull everyone sees their part (CP.Prefight): the plan as it stands now, sent when it changed. Made
 		-- again only when what it's made from has: nobody's cooldowns, the tanks and the raid as at the last check
 		local made
@@ -2417,7 +2450,8 @@ function showCard(rows, t, prepull, withRole)
 		card.nextAt, card.afterAt = nil, nil
 		card.rule:Hide()
 		local tanks = planTanks(rows)
-		local role = tanks and (tanks[1] == playerName and "You are first tank" or tanks[2] == playerName and "You are second tank")
+		local role = tanks and (tanks[1] == playerName and (tanks[2] and "You are first tank" or "You are the only tank")
+			or tanks[2] == playerName and "You are second tank")
 		card.role:SetText(role or "")
 		local y = role and -30 or -10
 		card.head:ClearAllPoints()
@@ -2624,8 +2658,9 @@ local function placeStrip()
 	end
 	strip.laneClip:ClearAllPoints()
 	strip.laneClip:SetPoint("TOPLEFT", LABEL_W + PAD + 2, -LANES_TOP - LANE_GAP)
-	strip.laneClip:SetHeight(LANES_BOTTOM - LANES_TOP - LANE_GAP + RAMP_DOWN)
-	strip.laneRow:SetHeight(LANES_BOTTOM - LANES_TOP - LANE_GAP + RAMP_DOWN)
+	local laneH = math.max(1, LANES_BOTTOM - LANES_TOP - LANE_GAP + RAMP_DOWN) -- no lanes (the tags alone): none to speak of
+	strip.laneClip:SetHeight(laneH)
+	strip.laneRow:SetHeight(laneH)
 	if strip.tagRow then
 		if lay.tags then strip.tagRow:Show() else strip.tagRow:Hide() end
 		-- the now line: the whole strip, the ruler row too (0 is at it), its fade a share of that
@@ -2642,9 +2677,9 @@ local function placeStrip()
 end
 
 function showStrip(rows, t, hasTanks)
-	-- each lane and the tank tags can be left out (both lanes out: no timeline)
+	-- each lane and the tank tags can be left out, each on its own (all three out: no timeline)
 	local tags, tank, aoe = allowed("CooldownPlanStripTags"), allowed("CooldownPlanStripTank"), allowed("CooldownPlanStripAoe")
-	if not allowed("CooldownPlanStrip") or not hasTanks or not (tank or aoe) then
+	if not allowed("CooldownPlanStrip") or not hasTanks or not (tags or tank or aoe) then
 		if strip then strip:Hide() end
 		return
 	end
@@ -2918,7 +2953,7 @@ function drawStrip(t)
 		p.kill:SetPoint("TOPLEFT", strip.laneRow, "TOPLEFT", left - x0 + KILL_SIDE, -laneY(2) - 1 - KILL_EDGE)
 		p.kill:SetSize(math.max(width - 2 * KILL_SIDE, 0.01), LANE_H - 1 - 2 * KILL_EDGE)
 		p.kill:Show()
-		-- each named star's death if left alone from here: in the zone, or before it as a warning, never after it
+		-- each named star's death if left alone from here, wherever it falls: before the zone or after it, it warns
 		local picks, early = CP.StarKillPicks[w.index] or {}, nil
 		for k = 1, math.max(w.kills, #p.ticks) do
 			local pick, tick = picks[k], p.ticks[k]
@@ -2926,7 +2961,7 @@ function drawStrip(t)
 			-- the star's own death time when the boss mod has it (exact on its 1s Collapse ticks, so it holds still
 			-- between them), else its health in seconds
 			local dies = hp and hp > 0 and t + (CP.StarDeathIn and CP.StarDeathIn(pick.mark) or hp)
-			if dies and dies <= w.to then
+			if dies then
 				if not tick then
 					tick = strip.laneLow:CreateTexture(nil, "OVERLAY")
 					tick:SetTexture(DEATH_COLOR[1], DEATH_COLOR[2], DEATH_COLOR[3], 1)
@@ -3083,14 +3118,18 @@ local function tellMine(id, say, announce)
 		shownFor = mod
 		showCard(plan.rows, 0, true, true)
 		local tanks = announce and planTanks(plan.rows)
-		local order = tanks and tanks[1] .. "\0" .. tanks[2]
+		local order = tanks and tanks[1] .. "\0" .. (tanks[2] or "")
 		if tanks and (announce == "room" or order ~= CP.toldOrder[id]) then
 			CP.toldOrder[id] = order
 			local function colored(name)
 				local cc = classColor(name)
 				return cc and ("|cff%02x%02x%02x%s|r"):format(cc.r * 255, cc.g * 255, cc.b * 255, name) or name
 			end
-			DBM:AddMsg(("Cooldown plan tanks: %s, then %s."):format(colored(tanks[1]), colored(tanks[2])))
+			if tanks[2] then
+				DBM:AddMsg(("Cooldown plan tanks: %s, then %s."):format(colored(tanks[1]), colored(tanks[2])))
+			else
+				DBM:AddMsg(("Cooldown plan tank: %s alone, no swaps."):format(colored(tanks[1])))
+			end
 		end
 	end
 	if #list > 0 and say then
@@ -3253,6 +3292,7 @@ function CP.TestFight(mod, misuse)
 		Stickboard = "PALADIN", Illithris = "PALADIN", Halosylvan = "PRIEST"}, pool = pool, weaker = "Dracohouston", skip = {}, script = {}}
 	pullTime = GetTime() + 8.5
 	CP.StarKillPicks = CP.MockStarPicks()
+	if mod.MockStarBars then mod:MockStarBars(true) end -- the boss's star bars, with the mock's stars
 	wipe(done)
 	fight = {uses = {}, dead = {}, missed = {}}
 	if misuse then
@@ -3385,6 +3425,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 			-- "T\t1\t<average item level>" or "T\t0"; an older client's "T\t1" sorts last
 			local _, isTank, ilvl = strsplit("\t", msg)
 			tankReported[sender] = isTank == "1" and (tonumber(ilvl) or 0) or nil
+			answeredAt[sender] = GetTime()
 		elseif kind == "P" and active and active.live then
 			-- a raider's own press (see the combat log handler); the same cast seen in the log too counts once
 			local _, spell, t, dest = strsplit("\t", msg)

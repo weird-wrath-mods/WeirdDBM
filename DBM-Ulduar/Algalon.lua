@@ -19,6 +19,7 @@ mod:AddBoolOption("CooldownPlanStrip", true)
 mod:AddBoolOption("CooldownPlanStripTags", true)
 mod:AddBoolOption("CooldownPlanStripTank", true)
 mod:AddBoolOption("CooldownPlanStripAoe", true)
+mod.indentOptions = {CooldownPlanSwaps = true, CooldownPlanStripTags = true, CooldownPlanStripTank = true, CooldownPlanStripAoe = true} -- under the card's and the timeline's switches (DBM-GUI)
 mod:AddBoolOption("CooldownPlanLock", false, nil, function() DBM.CooldownPlan.ApplyLock(mod) end)
 mod:AddButton(L.MoveCooldownPlan, function() DBM.CooldownPlan.ShowToMove(mod) end, nil, 260, 20)
 mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.TestFight(mod) end, nil, 260, 20) -- its label needs the width
@@ -232,6 +233,26 @@ local function starBarValue(s)
 	style = style or {}
 	style.bg = STAR_BAR_BG
 	if not icon and h > 0 then style.name = L.StarBarUnmarked end
+	return h, icon, style
+end
+
+-- The mock fight's bar for a mark: its newest stand-in star of that mark (CooldownPlan's mock star picks), coloured
+-- as a real one for the kill zone it's named for. Its health % is its seconds left, as on a real bar (1%/s)
+local function mockStarBar(mark)
+	local CP = DBM.CooldownPlan
+	local t = CP.FightTime and CP.FightTime()
+	local pick, zone
+	for _, w in ipairs(t and CP.SafeWindows(0, math.huge) or {}) do
+		for _, p in pairs(CP.StarKillPicks[w.index] or {}) do
+			if p.mark == mark and p.born and p.born <= t and (not pick or p.born > pick.born) then pick, zone = p, not w.expires and w or nil end
+		end
+	end
+	local h = pick and CP.PickHP(pick, t) or 0
+	if h <= 0 then return 0, nil, {bg = STAR_BAR_BG} end
+	local star = {icon = mark}
+	local _, icon, style
+	if zone and zone.to > t then _, icon, style = zoneBar(star, h, zone, t) else _, icon, style = starStyle(star, h, GREEN) end
+	style.bg = STAR_BAR_BG
 	return h, icon, style
 end
 
@@ -686,7 +707,26 @@ function mod:MoveStarBars()
 	for i = 1, STAR_COUNT do DBM.BossHealth:AddBoss(function() return 100 - 15 * i end, L["StarBar" .. i]) end
 end
 
+-- The mock fight (the Fight plan's test button) shows the star bars too, with its stand-in stars, when they're on.
+-- Not in a fight; hides only bars it opened itself
+local mockBars
+function mod:MockStarBars(on)
+	if self:IsInCombat() then return end
+	if not on then
+		if mockBars then DBM.BossHealth:Hide() end
+		mockBars = nil
+		return
+	end
+	if self.Options.HealthFrame == false then return end
+	mockBars = true
+	DBM.BossHealth:Show(L.CollapsingStars)
+	starBarsHere(self)
+	DBM.BossHealth:SetUpdateInterval(0.1)
+	for i = 1, STAR_COUNT do DBM.BossHealth:AddBoss(function() return mockStarBar(STAR_MARKS[i]) end, L["StarBar" .. i]) end
+end
+
 function mod:OnCombatStart(delay)
+	mockBars = nil -- a real pull's bars from here, not the mock's to hide
 	self:SetStage(1)
 	clearStars()
 	DBM.CooldownPlan.StarKillSafe = true -- the timeline's Star kill safe windows, while there are stars
