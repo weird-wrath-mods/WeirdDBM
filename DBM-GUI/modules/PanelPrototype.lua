@@ -195,9 +195,10 @@ function PanelPrototype:CreateSlider(text, low, high, step, width)
 	slider:SetValueStep(step)
 	slider:SetWidth(width or 180)
 	local sliderText = _G[slider:GetName() .. "Text"]
-	sliderText:SetText(parseDescription(text, true))
+	local label = parseDescription(text) -- formatted from the parsed text, or a $spell: shows raw once the value changes
+	sliderText:SetText(label)
 	slider:SetScript("OnValueChanged", function(_, value)
-		sliderText:SetFormattedText(text, value)
+		sliderText:SetFormattedText(label, value)
 	end)
 	self:SetLastObj(slider)
 	return slider

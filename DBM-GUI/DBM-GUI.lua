@@ -344,10 +344,16 @@ local function addOptions(mod, catpanel, v)
 		elseif mod.sliders and mod.sliders[v] then
 			local slider = mod.sliders[v]
 			catbutton = catpanel:CreateSlider(mod.localization.options[v], slider.minValue, slider.maxValue, slider.valueStep)
+			-- the template centres the label over the slider, so one wider than it spills left of the checkboxes
+			local label = _G[catbutton:GetName() .. "Text"]
+			label:ClearAllPoints()
+			label:SetPoint("BOTTOMLEFT", catbutton, "TOPLEFT")
+			label:SetJustifyH("LEFT")
 			catbutton:SetScript("OnShow", function(self)
 				self:SetValue(mod.Options[v])
 			end)
-			catbutton:HookScript("OnValueChanged", function(self)
+			catbutton:HookScript("OnValueChanged", function(self, value)
+				mod.Options[v] = value
 				if mod.optionFuncs and mod.optionFuncs[v] then
 					mod.optionFuncs[v]()
 				end
