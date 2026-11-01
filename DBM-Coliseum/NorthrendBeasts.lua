@@ -13,7 +13,9 @@ mod:SetMinSyncRevision(20220925000000)
 mod:SetMinCombatTime(30)
 mod:SetBossHPInfoToHighest()
 
-mod:RegisterCombat("combat")
+-- AC starts combat at the gate yell (a combat stalker holds the raid from then on), before Gormok exists, so
+-- combat-state detection never sees him engaged. Every heroic schedule is also timed from this yell.
+mod:RegisterCombat("yell", L.CombatStart)
 
 mod:RegisterEvents(
 	"CHAT_MSG_MONSTER_YELL"
@@ -38,8 +40,8 @@ local acidmaw = L.Acidmaw
 local icehowl = L.Icehowl
 
 -- General
-local enrageTimer			= mod:NewBerserkTimer(223) -- REVIEW! 2022/09/05 log with 233s fight time. Does Icehowl actually gets enraged or just the next massive crash will wipe the raid?
-local timerCombatStart		= mod:NewCombatTimer(23)
+local enrageTimer			= mod:NewBerserkTimer(520) -- heroic: every beast still alive casts Berserk 520s after the gate yell
+local timerCombatStart		= mod:NewCombatTimer(11) -- Gormok is summoned 1s after the gate yell and attacks 10s later
 local timerNextBoss			= mod:NewTimer(150, "TimerNextBoss", 2457, nil, nil, 1) -- 2min 30s, as per TC.
 
 mod:AddRangeFrameOption("10")
@@ -157,18 +159,20 @@ function mod:OnCombatStart(delay)
 	self.vb.DreadscaleDead = false
 	self.vb.AcidmawDead = false
 	self:SetStage(1)
-	specWarnStompPreWarn:Schedule(12-delay) -- 3s pre-warn. (10N Lordaeron 2022/10/02) - 14.9
+	-- combat starts at the gate yell; Gormok attacks 11s later and his own timers run from there
+	specWarnStompPreWarn:Schedule(23-delay) -- 3s pre-warn. (10N Lordaeron 2022/10/02) - 14.9
 	if self.Options.soundConcAuraMastery and isBuffOwner("player", 19746) then -- Concentration Aura Mastery by a Paladin will negate the interrupt effect of Staggering Stomp
-		soundAuraMastery:Schedule(12-delay, "Interface\\AddOns\\DBM-Core\\sounds\\PlayerAbilities\\AuraMastery.ogg")
+		soundAuraMastery:Schedule(23-delay, "Interface\\AddOns\\DBM-Core\\sounds\\PlayerAbilities\\AuraMastery.ogg")
 	else
-		specWarnStompPreWarn:ScheduleVoice(12-delay, "silencesoon")
+		specWarnStompPreWarn:ScheduleVoice(23-delay, "silencesoon")
 	end
 	if self:IsHeroic() then
 		timerNextBoss:Start(-delay)
+		enrageTimer:Start(-delay)
 	end
-	timerRisingAnger:Start(18-delay) -- REVIEW! ~10s variance? (25H Lordaeron 2022/09/03 || 25N Lordaeron 2022/09/23 || 25H Lordaeron 2022/09/24 || 25H Lordaeron 2022/09/28 || 10N Lordaeron 2022/10/02) - 18.9 || 26.1 || 29.7 || 21.9 || 18.2
-	timerNextStomp:Start(15-delay) -- (25H Lordaeron 2022/09/03) - 15.0
-	timerImpaleCD:Start() -- REVIEW! same 2s variance? (10H 2021/10/22 || 10N 2021/10/22 || 25H Lordaeron 2022/09/03) - 8 || 8 || 9.9
+	timerRisingAnger:Start(29-delay) -- REVIEW! ~10s variance? (25H Lordaeron 2022/09/03 || 25N Lordaeron 2022/09/23 || 25H Lordaeron 2022/09/24 || 25H Lordaeron 2022/09/28 || 10N Lordaeron 2022/10/02) - 18.9 || 26.1 || 29.7 || 21.9 || 18.2
+	timerNextStomp:Start(26-delay) -- (25H Lordaeron 2022/09/03) - 15.0
+	timerImpaleCD:Start(19-delay) -- REVIEW! same 2s variance? (10H 2021/10/22 || 10N 2021/10/22 || 25H Lordaeron 2022/09/03) - 8 || 8 || 9.9
 	updateHealthFrame(1)
 end
 
@@ -401,9 +405,6 @@ function mod:CHAT_MSG_MONSTER_YELL(msg)
 	elseif msg == L.Phase3 or msg:find(L.Phase3) then
 		updateHealthFrame(3)
 		self:SetStage(2.5)
-		if self:IsHeroic() then
-			enrageTimer:Start()
-		end
 --		self:UnscheduleMethod("WormsSubmerge")
 --		self:UnscheduleMethod("WormsEmerge")
 		timerCombatStart:Start(10)
