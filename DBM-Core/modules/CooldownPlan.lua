@@ -168,6 +168,16 @@ function CP.SmashTimes(from, stop)
 	return out
 end
 
+-- whether a smash lands in from..stop: SmashTimes(from, stop)[1] ~= nil without making the list, for the planner's
+-- checks that run thousands of times a plan
+function CP.SmashIn(from, stop)
+	for _, c in ipairs(smashCasts) do
+		local t = c + SMASH_LANDS
+		if t >= from and t < stop and t < FIGHT then return true end
+	end
+	return false
+end
+
 -- Star kill zones {from, to, index, kills} overlapping from..stop, one per smash gap: 7s to 18.5s after a Cosmic
 -- Smash lands (healers have topped the raid from it; the explosion stays 7s clear of the next smash). In a gap a Big
 -- Bang lands in, the zone starts 5s after the landing if it still fits, else ends 3s before the landing: inside the
@@ -360,7 +370,7 @@ local function raidDanger(a, b)
 	local key = a .. " " .. b
 	local known = CP.dangerMemo[key]
 	if known ~= nil then return known end
-	local danger = CP.SmashTimes(a, b)[1] ~= nil
+	local danger = CP.SmashIn(a, b)
 	if not danger then
 		for _, w in ipairs(CP.SafeWindows(a, b)) do
 			if not w.expires and (w.kills or 0) > 0 then danger = true break end
@@ -442,10 +452,13 @@ local function build(opts, rng, smashRng)
 		if c.trinket then trinketByPool[c.player .. "\0" .. c.spell] = true end
 		if c.role == "big" then bigByPool[c.player .. "\0" .. c.spell] = true end
 	end
+	local noOne = {} -- the empty list for "none": a fresh {} each time is garbage made thousands of times a plan
 	local mineOf = {} -- [player] = their pool indices: what free(), locked() and bubble() look through
+	local isForbear = {} -- [pool index] = forbearing(its spell), asked thousands of times a plan
 	for i, c in ipairs(pool) do
+		isForbear[i] = forbearing(c.spell)
 		uses[i] = {}
-		for _, t in ipairs(opts.used and opts.used[i] or {}) do uses[i][#uses[i] + 1] = t end
+		for _, t in ipairs(opts.used and opts.used[i] or noOne) do uses[i][#uses[i] + 1] = t end
 		mineOf[c.player] = mineOf[c.player] or {}
 		table.insert(mineOf[c.player], i)
 	end
@@ -455,20 +468,19 @@ local function build(opts, rng, smashRng)
 	-- lock the later one too), or their Avenging Wrath in the 30s before. self: the pool index asked about, whose own
 	-- cooldown is free()'s to check
 	local abs = math.abs -- the checks below run thousands of times a plan: numeric loops, no global lookups
-	local noOne = {}
 	local function locked(player, t, self)
 		local mine = mineOf[player] or noOne
 		for m = 1, #mine do
 			local k = mine[m]
-			if k ~= self and forbearing(pool[k].spell) then
+			if k ~= self and isForbear[k] then
 				local list = uses[k]
 				for n = 1, #list do if abs(t - list[n]) < FORBEARANCE then return true end end
 			end
 		end
-		for _, u in ipairs(opts.wrath and opts.wrath[player] or {}) do
+		for _, u in ipairs(opts.wrath and opts.wrath[player] or noOne) do
 			if t >= u and t - u < WRATH_LOCK then return true end
 		end
-		for _, u in ipairs(opts.forbear and opts.forbear[player] or {}) do -- cast before a re-plan: CP.Replan
+		for _, u in ipairs(opts.forbear and opts.forbear[player] or noOne) do -- cast before a re-plan: CP.Replan
 			if math.abs(t - u) < FORBEARANCE then return true end
 		end
 		return false
@@ -489,7 +501,7 @@ local function build(opts, rng, smashRng)
 		for n = 1, #own do
 			if abs(t - own[n]) < c.cd then return false end
 		end
-		if forbearing(c.spell) and locked(c.player, t, i) then return false end -- a paladin tank's Divine Protection
+		if isForbear[i] and locked(c.player, t, i) then return false end -- a paladin tank's Divine Protection
 		-- nobody gets two presses closer than gap (a trinket goes up with a cooldown, so it doesn't count; a tank's two
 		-- trinkets may go up together, the card's one step, or one right after the other)
 		local mine = mineOf[c.player]
@@ -591,13 +603,25 @@ local function build(opts, rng, smashRng)
 	local gridKey = table.concat(tanks, ",") .. "|" .. tank .. "|" .. table.concat(starts, ",") .. "|" .. stop
 	if CP.holderGridKey ~= gridKey then
 		local grid, s = {}, 1
-		for k = 0, math.ceil((stop + 60) * 2) do -- a question goes past stop by a cooldown's length at most
+		local last = math.ceil((stop + 60) * 2) -- a question goes past stop by a cooldown's length at most
+		for k = 0, last do
 			while starts[s + 1] and starts[s + 1] <= k / 2 do s = s + 1 end
 			grid[k] = holder(s)
 		end
-		CP.holderGrid, CP.holderGridKey = grid, gridKey
+		-- [tank][k] = how many of the grid's first k half seconds they have the boss for: a stretch's count in one
+		-- subtraction (worthIt)
+		local held = {}
+		for _, name in ipairs(tanks) do
+			local run, n = {[0] = 0}, 0
+			for k = 0, last do
+				if grid[k] == name then n = n + 1 end
+				run[k + 1] = n
+			end
+			held[name] = run
+		end
+		CP.holderGrid, CP.holderHeld, CP.holderGridKey = grid, held, gridKey
 	end
-	local holderGrid = CP.holderGrid
+	local holderGrid, holderHeld = CP.holderGrid, CP.holderHeld
 	local function holderAt(t)
 		local who = holderGrid[t * 2]
 		if who then return who end
@@ -605,8 +629,13 @@ local function build(opts, rng, smashRng)
 		while starts[s + 1] and starts[s + 1] <= t do s = s + 1 end
 		return holder(s)
 	end
-	-- a trinket is only worth pressing if at least half of it lands while its owner has the boss
+	-- a trinket is only worth pressing if at least half of it lands while its owner has the boss: its half seconds from
+	-- t counted off the grid's running counts when they're all on it, else asked one by one
 	local function worthIt(c, t)
+		local k, steps, run = t * 2, c.dur * 2, holderHeld[c.player]
+		if run and k >= 0 and k == math.floor(k) and steps == math.floor(steps) and run[k + steps] then
+			return (run[k + steps] - run[k]) * 0.5 >= c.dur / 2
+		end
 		local held = 0
 		for x = t, t + c.dur - 0.5, 0.5 do
 			if holderAt(x) == c.player then held = held + 0.5 end
@@ -620,7 +649,7 @@ local function build(opts, rng, smashRng)
 		for i, c in ipairs(pool) do
 			if c.player == r.player and c.spell == r.spell then
 				-- not one Forbearance now forbids (the paladin bubbled or pressed Avenging Wrath since): it's planned afresh
-				if bubble(i, r.time) == nil or forbearing(c.spell) and locked(c.player, r.time, i) then break end
+				if bubble(i, r.time) == nil or isForbear[i] and locked(c.player, r.time, i) then break end
 				use(i, r.time, r.target, r.note)
 				rows[#rows].kept = true -- already told to its player: step 5 leaves it where it is
 				if c.role == "big" or r.note == "Tank swap" then keptSwap[#keptSwap + 1] = r end -- the pull's or a swap's, big or the fallback
@@ -655,7 +684,8 @@ local function build(opts, rng, smashRng)
 					end
 				end
 				if heal and (not pick or (pool[pick].power or 0) + NEAR < (pool[heal].power or 0)) then pick = heal end
-				problems[#problems + 1] = ("%s has no big cooldown ready at %s"):format(who, s > 1 and ("the swap at " .. round(at) .. "s") or "the pull")
+				-- said only by the build that's kept (step 5's): the tries' scores need the count, not the words
+				if opts.improve then problems[#problems + 1] = ("%s has no big cooldown ready at %s"):format(who, s > 1 and ("the swap at " .. round(at) .. "s") or "the pull") end
 				bigMissed = bigMissed + 1
 			end
 			if pick then use(pick, press, who, s > 1 and "Tank swap" or nil) end
@@ -714,10 +744,12 @@ local function build(opts, rng, smashRng)
 					-- only what ends before the next planned cover: cooldowns on one tank never overlap
 					-- a big one too (Barkskin as a bear's swap cooldown): its swaps are planned already, and free() keeps
 					-- it clear of them
-					if cd.role ~= "bubble" and not cd.smashOnly and not cd.trinket and usable(cd, who) and bubble(i, c) and c + cd.dur <= (nextFixed or math.huge) + 0.01
-						and not (opening and cd.spell == CP.SALVATION)
-						and not (cd.raid and besideRaid(who, c, c + cd.dur))
-						and (not swapAt or cd.cd < BIG_CD or math.min(c + cd.dur, swapAt) - c >= BIG_ON_HOLDER * cd.dur - 0.01) then
+					-- cheapest first: these have no side effects, so their order is only speed (bubble() looks through
+					-- the caster's bubbles and their Forbearance)
+					if cd.role ~= "bubble" and not cd.smashOnly and not cd.trinket and c + cd.dur <= (nextFixed or math.huge) + 0.01
+						and not (opening and cd.spell == CP.SALVATION) and usable(cd, who)
+						and (not swapAt or cd.cd < BIG_CD or math.min(c + cd.dur, swapAt) - c >= BIG_ON_HOLDER * cd.dur - 0.01)
+						and not (cd.raid and besideRaid(who, c, c + cd.dur)) and bubble(i, c) then
 						if free(i, c) then
 							local last = -math.huge
 							for _, u in ipairs(uses[i]) do if u < c and u > last then last = u end end
@@ -727,7 +759,7 @@ local function build(opts, rng, smashRng)
 							-- for 0.2s more bare tank time a fight); then the tank's own before shared ones, which the other
 							-- tank could have used
 							local rank = cd.raid and 2 or cd.role == "ext" and 1 or 0
-							if cd.raid and CP.SmashTimes(c + 0.5, c + cd.dur - 0.5)[1] then rank = -1 end
+							if cd.raid and CP.SmashIn(c + 0.5, c + cd.dur - 0.5) then rank = -1 end
 							if rng and rng() < 0.3 then rank = 0 end -- a variation sometimes spends what it'd normally save
 							-- one still running at the incoming tank's press overlaps it: only when nothing else fits
 							if swapAt and c + cd.dur > swapAt - SWAP_LEAD + 0.01 then rank = rank + 3 end
@@ -930,9 +962,12 @@ local function build(opts, rng, smashRng)
 				return a.time < b.time
 			end)
 			for _, w in ipairs(windows) do
-				local mine = 1 -- this trinket's press, and its owner's others at that moment
-				for _, o in ipairs(rows) do if o.player == c.player and math.abs(o.time - w.time) < 0.01 then mine = mine + 1 end end
-				if free(i, w.time) and worthIt(c, w.time) and mine <= PRESS_CAP then use(i, w.time, c.player, "with " .. w.spell) end
+				-- the owner's presses at that moment counted only once it's free and worth it: a look through every row
+				if free(i, w.time) and worthIt(c, w.time) then
+					local mine = 1 -- this trinket's press, and its owner's others at that moment
+					for _, o in ipairs(rows) do if o.player == c.player and math.abs(o.time - w.time) < 0.01 then mine = mine + 1 end end
+					if mine <= PRESS_CAP then use(i, w.time, c.player, "with " .. w.spell) end
+				end
 			end
 		end
 	end
@@ -952,7 +987,7 @@ local function build(opts, rng, smashRng)
 		table.sort(spans, function(x, y) return x[1] < y[1] end)
 		local c = h[2]
 		local function bare(to)
-			problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(to))
+			if opts.improve then problems[#problems + 1] = ("nothing up on %s from %gs to %gs"):format(h[1], round(c), round(to)) end
 			uncovered = uncovered + to - c
 		end
 		for _, sp in ipairs(spans) do
@@ -1105,6 +1140,22 @@ local function seeded(seed)
 		return seed / 2147483648
 	end, function() return seed end
 end
+-- plan jobs (CP.Spread), their builds spread over frames: spread.job is the one running, job.seg the generateOnce
+-- under way with its share of the frames. Its tries take all but the last frame, an even share each, and its final
+-- build (step 5's, about 6 tries' work) the last frame on its own. One table, not locals: the file is near the
+-- 200-local limit
+local spread = {}
+function spread.built() -- a try done
+	local job = spread.job
+	if not job or coroutine.running() ~= job.co or not job.seg then return end
+	local seg = job.seg
+	seg.done = seg.done + 1
+	-- the k-th frame ends at its k/(frames - 1) of the tries; the last try's end also pauses, for the final build
+	if seg.frames > 1 and seg.done >= math.ceil(seg.frameNo * seg.tries / (seg.frames - 1)) then
+		seg.frameNo = seg.frameNo + 1
+		coroutine.yield()
+	end
+end
 local function generateOnce(opts, tries)
 	local rng, rngAt = seeded(12345)
 	local smashRng, smashAt = seeded(54321)
@@ -1113,6 +1164,7 @@ local function generateOnce(opts, tries)
 		local from = {r and rngAt(), s and smashAt()} -- where its random numbers started, to build it again
 		local rows, problems, score = build(opts, r, s)
 		if not best or better(score, bestScore) then best, bestProblems, bestScore, bestFrom = rows, problems, score, from end
+		spread.built()
 	end
 	for n = 0, tries or TRIES do try(n > 0 and rng or nil) end
 	for _ = 1, tries and math.floor(tries / 2) or SMASH_TRIES do try(rng, smashRng) end
@@ -1126,13 +1178,52 @@ end
 -- on Barkskin and one on an external are what's being weighed, so the swaps-without-a-big-cooldown count doesn't
 -- decide. A 25-man swaps on the big one: if it's short of cooldowns, that's the raid's to fix.
 function CP.Generate(opts, tries)
-	if not opts.small then return generateOnce(opts, tries) end
+	-- in a job: each generateOnce its share of the frames (a 10-man's two, half each), none of it paused at one frame
+	local job = spread.job
+	if job and coroutine.running() ~= job.co then job = nil end
+	local perOnce = (tries or TRIES) + 1 + (tries and math.floor(tries / 2) or SMASH_TRIES)
+	local function share(frames) if job and job.cap > 1 then job.seg = {frames = frames, tries = perOnce, done = 0, frameNo = 1} end end
+	if not opts.small then
+		share(job and job.cap)
+		return generateOnce(opts, tries)
+	end
+	local first = job and math.ceil(job.cap / 2)
+	share(first)
 	local with = setmetatable({swapShort = true}, {__index = opts})
 	local a = {generateOnce(with, tries)}
+	if job and job.cap > 1 then coroutine.yield() end -- the second one on frames of its own
+	share(job and job.cap - first)
 	local b = {generateOnce(opts, tries)}
 	local ca, cb = a[3][2] + CP.SMASH_COST * a[3][4], b[3][2] + CP.SMASH_COST * b[3][4]
 	if ca ~= cb then return unpack(ca < cb and a or b) end
 	return unpack(a[3][3] <= b[3][3] and a or b)
+end
+
+-- A plan is 62 builds of the fight (124 for a 10-man): in one frame, a hitch. CP.Spread(f, ...) runs f as a job, a
+-- coroutine Generate pauses between builds, over CP.PLAN_FRAMES frames (1 is all at once); what f does after its plan
+-- runs on the frame of the last build. The builds are the same, in the same order, so the plan is too. One job at a
+-- time: a newer one drops the one running. 15 frames: in the client a 25-man plan's worst frame was about 15ms where
+-- it took 190ms in one, and the plan is there within half a second at 30fps
+CP.PLAN_FRAMES = 15
+function spread.resume(job)
+	if spread.job ~= job then return end
+	local ok, err = coroutine.resume(job.co)
+	if not ok then
+		spread.job = nil
+		geterrorhandler()(err)
+		return
+	end
+	if coroutine.status(job.co) ~= "dead" then
+		DBM:Schedule(0.001, spread.resume, job) -- the next frame: within one, GetTime stands still and a 0 would run now
+		return
+	end
+	spread.job = nil
+end
+function CP.Spread(f, ...)
+	local args, n = {...}, select("#", ...)
+	local job = {co = coroutine.create(function() f(unpack(args, 1, n)) end), cap = math.max(1, CP.PLAN_FRAMES)}
+	spread.job = job
+	spread.resume(job)
 end
 
 local MATCH = 6	-- a cast this close to its planned time is that planned use, and one this late is a no-show (the shortest cooldowns last 6s)
@@ -2006,6 +2097,7 @@ local sendSeq = 0
 local update -- the re-plan being received (U messages); each pull starts over, as the sender's numbering may have
 local function replan()
 	if not active or not active.live then return end
+	local was = active
 	local t = GetTime() - pullTime
 	local tanks = activeTanks()
 	if not tanks then return end
@@ -2035,6 +2127,7 @@ local function replan()
 		rows = active.rows, uses = fight.uses, pool = active.pool or (roster(pullTime)), tanks = tanks, tank = tank, weaker = active.weaker or weakerTank(tanks),
 		now = t, dead = fight.dead, missed = fight.missed, back = fight.back, small = smallRaid(), swaps = swaps,
 	})
+	if active ~= was then return end -- the fight ended while its builds were spread over frames
 	local future, swapRows, ext = {}, {}, {}
 	for _, r in ipairs(rows) do
 		if r.time >= t then future[#future + 1] = r end
@@ -2054,9 +2147,10 @@ local function replan()
 	end
 	if #future == 0 then send(("U\t%d\t%g\t0\t0"):format(sendSeq, t)) end
 end
+function spread.replan() CP.Spread(replan) end
 function replanSoon()
-	DBM:Unschedule(replan)
-	DBM:Schedule(0.3, replan)
+	DBM:Unschedule(spread.replan)
+	DBM:Schedule(0.3, spread.replan)
 end
 
 -- the pull being fought: its boss's plan runs from pullTime, and a plan for it that arrives during the pull starts then
@@ -2171,7 +2265,7 @@ function CP.CheckTanks(mod, atOnce)
 	end
 	mod.tankCheckAt = GetTime()
 	send("Q")
-	DBM:Schedule(AUTO_WAIT, function()
+	DBM:Schedule(AUTO_WAIT, CP.Spread, function()
 		local pool, tanks, missing = roster(GetTime())
 		local id = tostring(mod.id):lower()
 		local text = CP.TankWarning(id, tanks, missing) or CP.OneTankWarning(id, {tanks[1], tanks[2]}, missing)
@@ -2209,7 +2303,7 @@ function CP.Prepare(mod)
 	autoFor[id] = true
 	if AOE_ONLY or not saved or not ownsAuto(id) then return end
 	send("Q")
-	DBM:Schedule(AUTO_WAIT, function()
+	DBM:Schedule(AUTO_WAIT, CP.Spread, function()
 		if ownsAuto(id) and autoPlan(id, GetTime(), true) then DBM:AddMsg(("Cooldown plan for %s made; it's made again and sent on each pull."):format(id)) end
 	end)
 end
@@ -2252,10 +2346,10 @@ DBM:RegisterCallback("DBM_Pull", function(_, mod, delay)
 	send("Q")
 	plog("pull %s: asked (Q)", this.id)
 	CP.lastInputs[this.id] = nil -- after the pull (cooldowns spent, a wipe), the room's next check makes one afresh
-	DBM:Schedule(AUTO_WAIT, function()
+	DBM:Schedule(AUTO_WAIT, CP.Spread, function()
 		if pulled ~= this or not ownsAuto(this.id) then plog("pull %s: gone before the plan", this.id) return end
 		local text = autoPlan(this.id, pullTime)
-		if not text then return end
+		if not text or pulled ~= this then return end
 		local msgs, long = CP.SendPlan(this.id, text)
 		plog("pull %s: plan made, %d lines sent%s", this.id, msgs and #msgs or 0, long and (", too long: " .. long[1]) or "")
 		startPlan()
@@ -2276,7 +2370,7 @@ function CP.Remake(id)
 	end
 	send("Q")
 	DBM:AddMsg("Asking everyone for their cooldowns; re-planning in 2s.")
-	DBM:Schedule(AUTO_WAIT, function()
+	DBM:Schedule(AUTO_WAIT, CP.Spread, function()
 		if active and active.live then
 			replan()
 			DBM:AddMsg("Re-planned the rest of the fight and sent it.")
@@ -3666,7 +3760,7 @@ function DBM:CooldownPlanCommand(arg)
 	end
 	local misuse = arg:match("^test%s*(%a*)$")
 	if misuse then -- temporary: the mock fight without going through Algalon's options
-		CP.TestFight(DBM:GetModByName("Algalon"), misuse ~= "" and misuse or nil)
+		CP.Spread(CP.TestFight, DBM:GetModByName("Algalon"), misuse ~= "" and misuse or nil)
 		return
 	end
 	view.id = arg ~= "" and arg or "algalon"

@@ -22,7 +22,7 @@ mod:AddBoolOption("CooldownPlanStripAoe", true)
 mod.indentOptions = {CooldownPlanSwaps = true, CooldownPlanStripTags = true, CooldownPlanStripTank = true, CooldownPlanStripAoe = true} -- under the card's and the timeline's switches (DBM-GUI)
 mod:AddBoolOption("CooldownPlanLock", false, nil, function() DBM.CooldownPlan.ApplyLock(mod) end)
 mod:AddButton(L.MoveCooldownPlan, function() DBM.CooldownPlan.ShowToMove(mod) end, nil, 260, 20)
-mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.TestFight(mod) end, nil, 260, 20) -- its label needs the width
+mod:AddButton(L.TestCooldownPlan, function() DBM.CooldownPlan.Spread(DBM.CooldownPlan.TestFight, mod) end, nil, 260, 20) -- its label needs the width; its plan spread over frames
 
 -- One "Collapsing Stars" section, drawn above the General Announces area; options are listed by name,
 -- so this must come before they are added (HealthFrame is re-added below and moves in too)
