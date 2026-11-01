@@ -28,7 +28,7 @@ mod:SetBossHealthInfo(
 )
 
 -- General
-local enrageTimer				= mod:NewBerserkTimer(600, nil, nil, nil, false) -- berserk default OFF
+local enrageTimer				= mod:NewBerserkTimer(480, nil, nil, nil, false) -- berserk default OFF
 local timerTimeForDisarmed		= mod:NewTimer(10, "achievementDisarmed")	-- 10 HC / 12 nonHC
 
 --NOTE: Two crunch armors are setup to appear in gui twice on purpose, because they are very different mechanically. One is meant to be ignored and one is meant to be tank swap
@@ -80,12 +80,13 @@ local function GripAnnounce(self)
 end
 
 -- AC (boss_kologarn.cpp): every ability is instant and runs on its own event: Smash 8s then 14s, Sweep
--- (Shockwave) 17s then 17s, Stone Grip 15s then 25s, Focused Eyebeam 10s then 20s. Smash and Sweep each
--- push every other pending event back 1s, and they still do with the arm they need dead (no cast, no
--- log). So the mod runs the same schedule itself, and what the log shows only corrects it. Overhead Smash
+-- (Shockwave) 17s then 17s, Stone Grip 15s then 25s, Focused Eyebeam 10s then 20s, Berserk once at 8min.
+-- Smash and Sweep each push every other pending event back 1s, Berserk included (about 545s in a full
+-- fight), and they still do with the arm they need dead (no cast, no log). So the mod runs the same
+-- schedule itself, and what the log shows only corrects it. Overhead Smash
 -- is an on-next-swing spell: it lands on his next swing after its event, mostly at once (logs: 40% under
 -- 0.25s, most within 1s, at most 2.8s), so its bar ends at the event and a Smash hit never retimes it.
-local FIRST = {smash = 8, sweep = 17, grip = 15, eye = 10}
+local FIRST = {smash = 8, sweep = 17, grip = 15, eye = 10, enrage = 480}
 local EVERY = {smash = 14, sweep = 17, grip = 25, eye = 20}
 local PUSHES = {smash = true, sweep = true}
 local SEEN_WINDOW = 3 -- one ability's hits within this are the same cast
@@ -118,6 +119,14 @@ local function redraw(restart)
 	show(timerNextShockwave, "sweep", leftArm)
 	show(timerNextGrip, "grip", rightArm)
 	show(timerNextEyebeam, "eye", true)
+	if due.enrage and due.enrage ~= shownEnd.enrage then
+		if shownEnd.enrage then
+			enrageTimer:AddTime(due.enrage - shownEnd.enrage)
+		else
+			enrageTimer:Start(due.enrage - now)
+		end
+		shownEnd.enrage = due.enrage
+	end
 end
 
 local function nextDue()
@@ -135,7 +144,7 @@ local function fire(self, k, t)
 			if other ~= k then due[other] = due[other] + 1 end
 		end
 	end
-	due[k], firedAt[k] = t + EVERY[k], t
+	due[k], firedAt[k] = EVERY[k] and t + EVERY[k], t -- Berserk runs once
 	redraw(k)
 	self:Unschedule(tick)
 	self:Schedule(math.max(0, due[nextDue()] - GetTime()), tick, self)
@@ -166,7 +175,6 @@ local function armBack(self, left)
 end
 
 function mod:OnCombatStart(delay)
-	enrageTimer:Start(-delay)
 	local engage = GetTime() - delay
 	table.wipe(firedAt)
 	table.wipe(seenAt)

@@ -11478,12 +11478,8 @@ do
 	local enragePrototype = {}
 	local mt = {__index = enragePrototype}
 
-	function enragePrototype:Start(timer)
-		timer = timer or self.timer or 600
-		timer = timer <= 0 and self.timer - mabs(timer) or timer
-		self.bar:SetTimer(timer)
-		self.bar:Start()
-		-- Berserk warnings share the bar's timer_berserk option so the whole feature toggles together
+	-- Berserk warnings share the bar's timer_berserk option so the whole feature toggles together
+	local function scheduleWarnings(self, timer)
 		local enabled = self.bar.mod.Options[self.bar.option]
 		if self.warning1 and enabled then
 			if timer > 660 then self.warning1:Schedule(timer - 600, 10, L.MIN) end
@@ -11495,6 +11491,23 @@ do
 			if timer > 30 then self.warning2:Schedule(timer - 30, 30, L.SEC) end
 			if timer > 10 then self.warning2:Schedule(timer - 10, 10, L.SEC) end
 		end
+	end
+
+	function enragePrototype:Start(timer)
+		timer = timer or self.timer or 600
+		timer = timer <= 0 and self.timer - mabs(timer) or timer
+		self.bar:SetTimer(timer)
+		self.bar:Start()
+		scheduleWarnings(self, timer)
+	end
+
+	-- for a berserk the boss pushes back: the bar extends in place instead of restarting, and its warnings follow
+	function enragePrototype:AddTime(extend)
+		if self.bar:GetRemaining() == 0 then return end
+		self.bar:AddTime(extend)
+		if self.warning1 then self.warning1:Cancel() end
+		if self.warning2 then self.warning2:Cancel() end
+		scheduleWarnings(self, self.bar:GetRemaining())
 	end
 
 	function enragePrototype:Schedule(t)
