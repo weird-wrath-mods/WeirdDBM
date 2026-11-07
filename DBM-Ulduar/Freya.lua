@@ -91,9 +91,22 @@ local CONSERVATOR, LASHER = 33203, 32918
 local TRIO = {[33202] = true, [32916] = true, [32919] = true}
 local LASHERS_PER_WAVE, AFTER_CLEARED, AFTER_TRIO, TRIO_REVIVE = 10, 5, 16, 11
 local waveType, lashersDead, trioDownAt = nil, 0, {}
-local function waveCleared(after)
+
+-- The server reschedules the next wave to exactly `after` from now, later as well as sooner, so the bar
+-- moves both ways. A trio wipe only does so if the regular wave hasn't come during the 11s before its
+-- wave end (the stale-set check), hence minLeft. Phase 2 has no more waves.
+local function waveCleared(after, minLeft)
 	local left = timerAlliesOfNature:GetRemaining()
-	if left > after then timerAlliesOfNature:RemoveTime(left - after) end -- keeps the bar's length
+	local apply = mod.vb.phase ~= 2 and left >= (minLeft or 0)
+	if apply then
+		if left > after then
+			timerAlliesOfNature:RemoveTime(left - after) -- keeps the bar's length
+		elseif left > 0 then
+			timerAlliesOfNature:AddTime(after - left)
+		else -- the wave is overdue (Freya was casting), so the reschedule still holds it back `after`
+			timerAlliesOfNature:Start(after)
+		end
+	end
 	waveType = nil
 end
 local function newWave(kind)
@@ -222,6 +235,7 @@ function mod:SPELL_AURA_REMOVED(args)
 		warnPhase2:Play("ptwo")
 		self:SetStage(2)
 		timerAlliesOfNature:Stop() -- no more waves once Attuned to Nature is gone
+		waveType = nil
 		timerNextNatureBombSummon:Start(BOMB_FIRST)
 		specWarnNatureBombSummon:Schedule(BOMB_FIRST)
 		--timerNatureBombExplosion:Start(13.4) -- REVIEW! variance [?] (S3 HM log 2022/07/22) - 13.4
@@ -253,7 +267,7 @@ function mod:UNIT_DIED(args)
 		for _, t in pairs(trioDownAt) do
 			if now - t < TRIO_REVIVE then down = down + 1 end
 		end
-		if down >= 3 then waveCleared(AFTER_TRIO) end
+		if down >= 3 then waveCleared(AFTER_TRIO, TRIO_REVIVE) end
 	end
 	if cid == 33202 or cid == 32916 or cid == 32919 then
 		if self.Options.HealthFrame then
