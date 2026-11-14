@@ -35,6 +35,11 @@ private.cooldownData = {
 	[12975] = {buff = 12976, dur = 20, cd = 180, power = 23, role = "self", class = "WARRIOR", mods = { -- Last Stand
 		{field = "cd", flat = -60, glyph = 58376}, -- Glyph of Last Stand
 	}},
+	[2565] = {buff = 2565, dur = 10, cd = 60, power = 35, role = "self", class = "WARRIOR", mods = { -- Shield Block
+		{field = "cd", flat = -10, talent = 29598, rank = 1}, -- Shield Mastery
+		{field = "cd", flat = -20, talent = 29598, rank = 2}, -- Shield Mastery
+		{field = "cd", flat = -10, sets = {{pieces = 4, items = {48429, 48430, 48433, 48436, 48445, 48446, 48447, 48448, 48449, 48450, 48451, 48452, 48453, 48454, 48455, 48875, 48876, 48877, 48878, 48879}} --[[ Wrynn's Plate ]], {pieces = 4, items = {48456, 48457, 48458, 48459, 48460, 48461, 48462, 48463, 48464, 48465, 48466, 48467, 48468, 48469, 48470, 48870, 48871, 48872, 48873, 48874}} --[[ Hellscream's Plate ]]}}, -- Item - Warrior T9 Tank 4P Bonus (Shield Block)
+	}},
 	[22812] = {buff = 22812, dur = 12, cd = 60, power = 20, role = "self", class = "DRUID", mods = { -- Barkskin
 		{field = "dur", flat = 3, sets = {{pieces = 4, items = {39553, 39554, 39555, 39556, 39557, 40471, 40472, 40473, 40493, 40494}} --[[ Dreamwalker Battlegear ]]}}, -- Barkskin Duration Increase
 		{field = "cd", flat = -12, sets = {{pieces = 4, items = {48203, 48204, 48205, 48206, 48207, 48208, 48209, 48210, 48211, 48212, 48213, 48214, 48215, 48216, 48217, 48799, 48800, 48801, 48802, 48803}} --[[ Malfurion's Battlegear ]], {pieces = 4, items = {48188, 48189, 48190, 48191, 48192, 48193, 48194, 48195, 48196, 48197, 48198, 48199, 48200, 48201, 48202, 48794, 48795, 48796, 48797, 48798}} --[[ Runetotem's Battlegear ]]}}, -- Item - Druid T9 Feral 4P Bonus

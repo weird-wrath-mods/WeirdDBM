@@ -658,7 +658,7 @@ local function build(opts, rng, smashRng)
 		end
 	end
 
-	-- 1: the pull and every swap-in get the incoming tank's big cooldown, else the longest one ready
+	-- 1: the pull and every swap-in get the incoming tank's big cooldown, else the strongest of their own ready
 	for s, at in ipairs(starts) do
 		local press = s > 1 and at - SWAP_LEAD or at
 		local kept = false
@@ -671,17 +671,25 @@ local function build(opts, rng, smashRng)
 				if c.role == "big" and c.player == who and free(i, press) then pick = i break end
 			end
 			if not pick then
-				-- the longest one ready; one that heals as it goes up (Lay on Hands) only when nothing near as strong is: the
+				-- the tank's own first: the tank chooses the moment of the taunt, so only their own press is sure to be on
+				-- it; another player's only when the tank has none ready. Of those the strongest, or the longest of any
+				-- within NEAR of it. One that heals as it goes up (Lay on Hands) only when nothing near as strong is: the
 				-- tank coming in is at full health, and later in their stint its heal lands on damage
-				local NEAR, heal = 5, nil
+				local NEAR, heal, cands, own = 5, nil, {}, false
 				for i, c in ipairs(pool) do
 					if usable(c, who) and c.role ~= "bubble" and not c.raid and not c.trinket and free(i, press) and bubble(i, press) and not covers(who, press, press + c.dur) then
 						if c.heals then
 							if not heal or c.dur > pool[heal].dur then heal = i end
-						elseif not pick or c.dur > pool[pick].dur then
-							pick = i
+						else
+							if c.player == who and not own then own, cands = true, {} end
+							if c.player == who or not own then cands[#cands + 1] = i end
 						end
 					end
+				end
+				local top = 0
+				for _, i in ipairs(cands) do top = math.max(top, pool[i].power or 0) end
+				for _, i in ipairs(cands) do
+					if (pool[i].power or 0) + NEAR >= top and (not pick or pool[i].dur > pool[pick].dur) then pick = i end
 				end
 				if heal and (not pick or (pool[pick].power or 0) + NEAR < (pool[heal].power or 0)) then pick = heal end
 				-- said only by the build that's kept (step 5's): the tries' scores need the count, not the words
@@ -2676,7 +2684,7 @@ local TAG_FONT = 12
 -- short names, so a block's label fits it
 local STRIP_SHORT = {
 	[48792] = "Icebound", [498] = "Div Prot", [871] = "Shield Wall", [61336] = "Surv Inst", [55233] = "Vamp Blood",
-	[51271] = "Unbr Armor", [12975] = "Last Stand", [22812] = "Barkskin", [22842] = "Frenzied", [6940] = "Hand of Sac", [1038] = "Hand of Salv",
+	[51271] = "Unbr Armor", [12975] = "Last Stand", [2565] = "Shield Block", [22812] = "Barkskin", [22842] = "Frenzied", [6940] = "Hand of Sac", [1038] = "Hand of Salv",
 	[64205] = "DSac", [48788] = "Lay on Hands", [33206] = "Pain Sup", [47788] = "Guard Spirit", [31821] = "AuraM",
 	[64763] = "Heart of Iron", [60286] = "Def Code", [68443] = "Brawler's", [60054] = "Valor Medal", [59757] = "Monarch Crab",
 	[65012] = "King Llane", [60258] = "Repulsion", [65011] = "Furnace",
@@ -2691,6 +2699,7 @@ local STRIP_COLORS = {
 	[55233] = {0.69, 0.23, 0.18}, -- Vampiric Blood
 	[51271] = {0.29, 0.25, 0.71}, -- Unbreakable Armor
 	[12975] = {0.54, 0.43, 0.23}, -- Last Stand
+	[2565] = {0.40, 0.50, 0.58},  -- Shield Block
 	[22812] = {0.18, 0.55, 0.34}, -- Barkskin
 	[22842] = {0.62, 0.12, 0.30}, -- Frenzied Regeneration
 	[6940] = {0.76, 0.33, 0.50},  -- Hand of Sacrifice
