@@ -37,7 +37,7 @@ mod:AddTimerLine(L.name)
 local warnFocusedEyebeam		= mod:NewTargetNoFilterAnnounce(63346, 4)
 local warnCrunchArmor			= mod:NewStackAnnounce(64002, 2, nil, "Tank|Healer")
 
-local specWarnCrunchArmor2		= mod:NewSpecialWarningStack(64002, nil, 2, nil, 2, 1, 6)
+local specWarnCrunchArmor2		= mod:NewSpecialWarningStack(64002, nil, 3, nil, 2, 1, 6)
 local specWarnEyebeam			= mod:NewSpecialWarningRun(63346, nil, nil, nil, 4, 2)
 local specWarnEyebeamNear		= mod:NewSpecialWarningClose(63346, nil, nil, nil, 1, 2)
 local yellBeam					= mod:NewYell(63346)
@@ -207,7 +207,7 @@ function mod:SPELL_AURA_APPLIED(args)
 		end
 	elseif args:IsSpellID(64002, 63355) then	-- Crunch Armor
 		local amount = args.amount or 1
-		if amount >= 2 then
+		if amount >= 3 then
 			if args:IsPlayer() then
 				specWarnCrunchArmor2:Show(amount)
 				specWarnCrunchArmor2:Play("stackhigh")
