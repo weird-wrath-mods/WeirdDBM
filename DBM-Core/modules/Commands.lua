@@ -24,7 +24,7 @@ end
 local function Pull(timer, allowShort)
 	local isTank = UnitGroupRolesAssigned("player")
 	local LFGTankException = IsPartyLFG() and isTank --Tanks in LFG need to be able to send pull timer even if someone refuses to pass lead. LFG locks roles so no one can abuse this.
-	if (DBM:GetRaidRank() == 0 and IsInGroup() and not LFGTankException) or select(2, IsInInstance()) == "pvp" or DBM:IsEncounterInProgress() then
+	if (DBM:GetRaidRank() == 0 and IsInGroup() and not LFGTankException) or select(2, IsInInstance()) == "pvp" then
 		return DBM:AddMsg(L.ERROR_NO_PERMISSION)
 	end
 	if timer > 0 and timer < 3 and not allowShort then -- allowShort lets callers (e.g. Malygos key) issue sub-3s pulls
@@ -67,7 +67,7 @@ end
 
 local stringWorkaround
 local function Break(timer)
-	if IsInGroup() and (DBM:GetRaidRank() == 0 or IsPartyLFG()) or DBM:IsEncounterInProgress() or select(2, IsInInstance()) == "pvp" then--No break timers if not assistant or if it's dungeon/raid finder/BG
+	if IsInGroup() and (DBM:GetRaidRank() == 0 or IsPartyLFG()) or select(2, IsInInstance()) == "pvp" then--No break timers if not assistant or if it's dungeon/raid finder/BG
 		DBM:AddMsg(L.ERROR_NO_PERMISSION)
 		return
 	end
