@@ -73,13 +73,17 @@ local timerGroundTremorCD 		= mod:NewCDCountTimer("v25-35", 62859, nil, nil, nil
 
 
 
-mod:AddSetIconOption("SetIconOnRoots", 62438, false, false, {6, 5, 4})
+-- Each cast's roots get Square, Moon, Triangle in order (25-man roots 3 per cast); casts are 45s+ apart, so a gap
+-- of 5s starts a new cast
+local ROOT_ICONS = {6, 5, 4}
+local ROOT_AURAS = {62283, 62438, 62439, 62861, 62862, 62930}
+local rootIcons, rootCount, lastRootAt = {}, 0, 0
+mod:AddSetIconOption("SetIconOnRoots", 62438, true, false, ROOT_ICONS)
 
 mod:GroupSpells(64587, 64604) -- Nature Bomb, internal Nature Bomb summon ID
 
 local adds = {}
 mod.vb.altIcon = true
-mod.vb.iconId = 6
 mod.vb.waves = 0
 mod.vb.tremorCount = 0
 mod.vb.isHardMode = false
@@ -120,7 +124,8 @@ local ELDER_ABILITY = {[32914] = {timerGroundTremorCD, 35, 1}, [32913] = {timerI
 
 function mod:OnCombatStart(delay)
 	self.vb.altIcon = true
-	self.vb.iconId = 6
+	table.wipe(rootIcons)
+	rootCount, lastRootAt = 0, 0
 	self.vb.waves = 0
 	self.vb.tremorCount = 0
 	self:SetStage(1)
@@ -209,14 +214,19 @@ function mod:SPELL_CAST_SUCCESS(args)
 end
 
 function mod:SPELL_AURA_APPLIED(args)
-	if args:IsSpellID(62283, 62438, 62439, 62861, 62862, 62930) then --  Roots
+	if args:IsSpellID(unpack(ROOT_AURAS)) then
 		warnIronRoots:CombinedShow(0.5, args.destName)
 		if args:IsPlayer() then
 			yellIronRoots:Yell()
 		end
-		self.vb.iconId = self.vb.iconId - 1
-		if self.Options.SetIconOnRoots then
-			self:SetIcon(args.destName, self.vb.iconId, 15)
+		local now = GetTime()
+		if now - lastRootAt > 5 then rootCount = 0 end
+		lastRootAt = now
+		rootCount = rootCount + 1
+		local icon = ROOT_ICONS[rootCount]
+		if self.Options.SetIconOnRoots and icon then
+			rootIcons[args.destName] = icon
+			self:SetIcon(args.destName, icon)
 		end
 	elseif args:IsSpellID(62451, 62865) then
 		if self:AntiSpam(20, 62451) then
@@ -239,11 +249,11 @@ function mod:SPELL_AURA_REMOVED(args)
 		timerNextNatureBombSummon:Start(BOMB_FIRST)
 		specWarnNatureBombSummon:Schedule(BOMB_FIRST)
 		--timerNatureBombExplosion:Start(13.4) -- REVIEW! variance [?] (S3 HM log 2022/07/22) - 13.4
-	elseif args:IsSpellID(62861, 62438) then
-		if self.Options.SetIconOnRoots then
+	elseif args:IsSpellID(unpack(ROOT_AURAS)) then
+		if rootIcons[args.destName] then
+			rootIcons[args.destName] = nil
 			self:RemoveIcon(args.destName)
 		end
-		self.vb.iconId = self.vb.iconId + 1
 	elseif args:IsSpellID(63571, 62589) then -- Nature's Fury
 		if self.Options.SetIconOnFury then
 			self:RemoveIcon(args.destName)
