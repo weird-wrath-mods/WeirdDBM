@@ -108,9 +108,12 @@ local killPicked = {} -- star -> true: stars this client (as raid leader) named 
 -- for kill targets, star and circle for tanks. A mark is on one unit at a time, so a player wearing
 -- one of these loses it to the star.
 local STAR_MARKS = {6, 5, 4, 3}
--- The opening wave's bar by spawn point (see placeOpening): north-east moon, north-west triangle, south-east
--- square, south-west diamond
-local POINT_BAR = {2, 3, 1, 4}
+-- The opening wave's bar by spawn point (see placeOpening): north-east square, north-west moon, south-east
+-- triangle, south-west diamond, i.e. spawn order, which is also least to most likely to be refilled: a wave
+-- summons CollapsingStarPos[alive..4], so the south-west point comes back whenever any star is missing and
+-- the north-east one only when none is alive. Square, killed first, is the north-east star: it wanders into
+-- the tank and melee at the north tank spot (patch-O's shield, 2026-11-20).
+local POINT_BAR = {1, 2, 3, 4}
 
 local playerGUID, phased, lastStarSync = nil, false, 0
 -- A star GUID this client finds itself goes out at once, at the end of the event that found it (so with any mark

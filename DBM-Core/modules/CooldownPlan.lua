@@ -242,7 +242,7 @@ end
 local STAR_MARKS = {6, 5, 4, 3}
 local MOCK_BURN = 12
 -- Picks known before any star spawns: zones 1-4 kill the opening wave, all the same age, whose bars are its spawn
--- points (Algalon.lua's placeOpening): square (south-east), moon (north-east), triangle (north-west), diamond
+-- points (Algalon.lua's placeOpening): square (north-east), moon (north-west), triangle (south-east), diamond
 CP.FIXED_STAR_PICKS = {[1] = {6}, [2] = {5}, [3] = {4}, [4] = {3}}
 function CP.MockStarPicks()
 	local picks, rows, ev = {}, {}, {}
